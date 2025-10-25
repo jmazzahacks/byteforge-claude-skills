@@ -14,6 +14,16 @@
         "name": "Jason Byteforge",
         "github": "jmazzahacks"
       }
+    },
+    {
+      "name": "python-pypi-setup",
+      "source": "./skills/python-pypi-setup",
+      "description": "Modern Python package setup for PyPI publishing with pyproject.toml, src layout, hatchling build system, comprehensive .gitignore, and automated build-publish script. Follows PEP 517/518 standards.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Jason Byteforge",
+        "github": "jmazzahacks"
+      }
     }
   ]
 }

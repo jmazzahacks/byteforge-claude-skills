@@ -35,6 +35,41 @@ A skill that provides a standardized pattern for setting up PostgreSQL databases
 
 ---
 
+### python-pypi-setup
+
+A skill that provides a modern, standardized pattern for setting up Python packages for PyPI publishing.
+
+**What it creates:**
+- `pyproject.toml` - Modern Python project configuration with hatchling
+- `src/{package_name}/` - Source layout with explicit package discovery
+- `.gitignore` - Comprehensive Python artifact exclusions
+- `requirements.txt` - Development dependencies (build, twine)
+- `build-publish.sh` - Automated build and publish script with venv activation
+- `README.md` - Basic project documentation
+
+**Features:**
+- ✅ Modern pyproject.toml-based configuration (PEP 517/518)
+- ✅ Src layout pattern for better code organization
+- ✅ Explicit package discovery with hatchling
+- ✅ Comprehensive .gitignore for Python projects
+- ✅ Automated build-publish script with venv activation
+- ✅ Parameterized project setup (interactive questions)
+- ✅ License selection (MIT, Apache-2.0, GPL-3.0, BSD-3-Clause)
+- ✅ Proper PyPI classifiers and metadata
+
+**Design Principles:**
+1. **Modern Standards** - Follows PEP 517/518, no setup.py needed
+2. **Src Layout** - Clean separation of source code in src/ directory
+3. **Explicit Configuration** - Explicit package discovery, no magic
+4. **Virtual Environment Convention** - Uses bin/ at project root
+5. **Comprehensive .gitignore** - Covers all common Python artifacts
+6. **Interactive Setup** - Asks user questions before generating files
+7. **Automated Publishing** - Simple script for build and PyPI upload
+
+[View full python-pypi-setup documentation →](./skills/python-pypi-setup/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -63,8 +98,9 @@ cd byteforge-claude-skills
 
 ## Usage
 
-Once installed, invoke skills by describing what you want to do. For example:
+Once installed, invoke skills by describing what you want to do. Skills are automatically activated based on your request.
 
+### postgres-setup example:
 ```
 User: "Set up postgres database for my project"
 ```
@@ -75,6 +111,19 @@ Claude will recognize the postgres-setup skill and:
 3. Generate `database/schema.sql` with best practices
 4. Generate `dev_scripts/setup_database.py` with project-specific naming
 5. Document required environment variables
+
+### python-pypi-setup example:
+```
+User: "Set up a Python package for PyPI"
+```
+
+Claude will recognize the python-pypi-setup skill and:
+1. Ask for project details (name, description, author, license, etc.)
+2. Create src/ directory structure with package
+3. Generate `pyproject.toml` with proper configuration
+4. Create comprehensive `.gitignore`
+5. Generate `build-publish.sh` script
+6. Create `README.md` with setup instructions
 
 ## Repository Structure
 
