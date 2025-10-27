@@ -61,37 +61,17 @@ Create these directories if they don't exist:
 Create `{project_name}.py` using this template:
 
 ```python
-"""
-{Project Name} API Server
-
-Flask-based REST API with OpenAPI/Swagger documentation via flask-smorest.
-"""
-
 import os
 import logging
 from flask import Flask
 from flask_cors import CORS
 from flask_smorest import Api
 
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 def create_app():
-    """
-    Application factory pattern for Flask app.
-
-    Returns:
-        Flask: Configured Flask application instance
-    """
     app = Flask(__name__)
-
-    # API configuration for flask-smorest
     app.config['API_TITLE'] = '{Project Name} API'
     app.config['API_VERSION'] = 'v1'
     app.config['OPENAPI_VERSION'] = '3.0.2'
@@ -99,35 +79,20 @@ def create_app():
     app.config['OPENAPI_SWAGGER_UI_PATH'] = '/swagger'
     app.config['OPENAPI_SWAGGER_UI_URL'] = 'https://cdn.jsdelivr.net/npm/swagger-ui-dist/'
 
-    # Enable CORS for all routes
     CORS(app)
-
-    # Initialize flask-smorest API
     api = Api(app)
 
-    # Register blueprints
     from blueprints.{feature} import blp as {feature}_blp
     api.register_blueprint({feature}_blp)
 
-    logger.info("Flask app initialized successfully")
+    logger.info("Flask app initialized")
     return app
 
-
 if __name__ == '__main__':
-    # Get configuration from environment
     port = int(os.environ.get('PORT', {port_number}))
-    debug = os.environ.get('DEBUG', 'False').lower() == 'true'
-
     app = create_app()
-
-    logger.info(f"Starting {Project Name} API server on port {port}")
-    logger.info(f"Swagger UI available at http://localhost:{port}/swagger")
-
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=debug
-    )
+    logger.info(f"Swagger UI: http://localhost:{port}/swagger")
+    app.run(host='0.0.0.0', port=port)
 ```
 
 **CRITICAL**: Replace:
@@ -143,111 +108,45 @@ For each feature/endpoint, create two files:
 ### File: `blueprints/{feature}.py`
 
 ```python
-"""
-{Feature} API Blueprint using flask-smorest.
-"""
-
 from flask.views import MethodView
 from flask_smorest import Blueprint, abort
+from .{feature}_schemas import {Feature}QuerySchema, {Feature}ResponseSchema, ErrorResponseSchema
 
-from .{feature}_schemas import (
-    {Feature}QuerySchema,
-    {Feature}ResponseSchema,
-    ErrorResponseSchema
-)
-
-
-# Create the blueprint
-blp = Blueprint(
-    '{feature}',
-    __name__,
-    url_prefix='/api',
-    description='{Feature} API endpoints'
-)
-
+blp = Blueprint('{feature}', __name__, url_prefix='/api', description='{Feature} API')
 
 @blp.route('/{feature}')
 class {Feature}Resource(MethodView):
-    """{Feature} endpoint."""
-
     @blp.arguments({Feature}QuerySchema, location='query')
     @blp.response(200, {Feature}ResponseSchema)
-    @blp.alt_response(400, schema=ErrorResponseSchema, description='Bad Request')
-    @blp.alt_response(500, schema=ErrorResponseSchema, description='Internal Server Error')
+    @blp.alt_response(400, schema=ErrorResponseSchema)
+    @blp.alt_response(500, schema=ErrorResponseSchema)
     def get(self, query_args):
-        """
-        Get {feature} data.
-
-        Returns {feature} information based on query parameters.
-        """
         try:
-            # TODO: Implement logic here
-
-            return {
-                "message": "Success",
-                "data": []
-            }
-
+            # TODO: Implement logic
+            return {"message": "Success", "data": []}
         except ValueError as e:
-            abort(400, message=f"Bad request: {str(e)}")
+            abort(400, message=str(e))
         except Exception as e:
-            abort(500, message=f"Internal error: {str(e)}")
+            abort(500, message=str(e))
 ```
 
 ### File: `blueprints/{feature}_schemas.py`
 
 ```python
-"""
-Marshmallow schemas for {feature} API validation and documentation.
-"""
-
 from marshmallow import Schema, fields
 
-
 class {Feature}QuerySchema(Schema):
-    """Query parameters for {feature} endpoint."""
-
-    limit = fields.Integer(
-        required=False,
-        load_default=100,
-        metadata={'description': 'Maximum number of results to return'}
-    )
-    offset = fields.Integer(
-        required=False,
-        load_default=0,
-        metadata={'description': 'Number of results to skip'}
-    )
-
+    limit = fields.Integer(load_default=100, metadata={'description': 'Max results'})
+    offset = fields.Integer(load_default=0, metadata={'description': 'Skip count'})
 
 class {Feature}ResponseSchema(Schema):
-    """Response schema for {feature} endpoint."""
-
-    message = fields.String(
-        required=True,
-        metadata={'description': 'Status message'}
-    )
-    data = fields.List(
-        fields.Dict(),
-        required=True,
-        metadata={'description': '{Feature} data'}
-    )
-
+    message = fields.String(required=True)
+    data = fields.List(fields.Dict(), required=True)
 
 class ErrorResponseSchema(Schema):
-    """Error response schema."""
-
-    code = fields.Integer(
-        required=True,
-        metadata={'description': 'HTTP status code'}
-    )
-    status = fields.String(
-        required=True,
-        metadata={'description': 'Status text'}
-    )
-    message = fields.String(
-        required=False,
-        metadata={'description': 'Error message details'}
-    )
+    code = fields.Integer(required=True)
+    status = fields.String(required=True)
+    message = fields.String()
 ```
 
 **CRITICAL**: Replace:
@@ -476,62 +375,16 @@ User: "Set up Python package for PyPI"
 5. Documents environment variables needed
 6. Provides startup instructions
 
-## Advanced Patterns
+## Optional: Docker Support
 
-### Custom Error Handlers
-
-Add to main application file:
-
-```python
-@app.errorhandler(404)
-def not_found(e):
-    return {"code": 404, "status": "Not Found"}, 404
-
-@app.errorhandler(500)
-def internal_error(e):
-    return {"code": 500, "status": "Internal Server Error"}, 500
-```
-
-### Request Logging Middleware
-
-```python
-@app.before_request
-def log_request():
-    logger.info(f"{request.method} {request.path}")
-
-@app.after_request
-def log_response(response):
-    logger.info(f"{request.method} {request.path} - {response.status_code}")
-    return response
-```
-
-### Health Check Endpoint
-
-```python
-@app.route('/health')
-def health_check():
-    return {"status": "healthy", "version": "1.0.0"}, 200
-```
-
-## Docker Support (Optional)
-
-If user wants Docker support, create `Dockerfile`:
+If user requests Docker, create `Dockerfile`:
 
 ```dockerfile
 FROM python:3.11-slim
-
 WORKDIR /app
-
-# Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
 COPY . .
-
-# Expose port
 EXPOSE {port_number}
-
-# Run with gunicorn
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:{port_number}", "{project_name}:create_app()"]
 ```
