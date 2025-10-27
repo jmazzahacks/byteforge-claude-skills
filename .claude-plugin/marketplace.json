@@ -24,6 +24,16 @@
         "name": "Jason Byteforge",
         "github": "jmazzahacks"
       }
+    },
+    {
+      "name": "flask-smorest-api",
+      "source": "./skills/flask-smorest-api",
+      "description": "Production-ready Flask REST API setup with flask-smorest for automatic OpenAPI/Swagger docs, blueprint architecture, Marshmallow schemas, singleton manager pattern, and CORS support. Includes application factory, MethodView classes, and Gunicorn configuration.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Jason Byteforge",
+        "github": "jmazzahacks"
+      }
     }
   ]
 }

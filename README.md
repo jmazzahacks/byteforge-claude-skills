@@ -70,6 +70,41 @@ A skill that provides a modern, standardized pattern for setting up Python packa
 
 ---
 
+### flask-smorest-api
+
+A skill that provides a production-ready pattern for building Flask REST APIs with automatic OpenAPI/Swagger documentation.
+
+**What it creates:**
+- Main application file with Flask app factory pattern
+- Blueprint architecture for modular endpoint organization
+- Marshmallow schema files for validation and documentation
+- Singleton manager for shared service instances
+- CORS support and error handling
+- `requirements.txt` with all dependencies
+
+**Features:**
+- ✅ Automatic OpenAPI/Swagger documentation via flask-smorest
+- ✅ Blueprint architecture for modularity
+- ✅ MethodView classes for clean HTTP method handling
+- ✅ Type-safe request/response with Marshmallow schemas
+- ✅ Singleton manager pattern for database/service initialization
+- ✅ CORS support for frontend integration
+- ✅ Application factory pattern for testing
+- ✅ Gunicorn production server support
+
+**Design Principles:**
+1. **Blueprint Organization** - One blueprint per feature/resource
+2. **Schema-Driven** - Marshmallow schemas for validation and docs
+3. **Singleton Manager** - Centralized service initialization
+4. **Application Factory** - `create_app()` pattern for flexibility
+5. **OpenAPI/Swagger** - Automatic documentation generation
+6. **Environment-Based Config** - All secrets via environment variables
+7. **Production Ready** - Gunicorn support out of the box
+
+[View full flask-smorest-api documentation →](./skills/flask-smorest-api/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -124,6 +159,21 @@ Claude will recognize the python-pypi-setup skill and:
 4. Create comprehensive `.gitignore`
 5. Generate `build-publish.sh` script
 6. Create `README.md` with setup instructions
+
+### flask-smorest-api example:
+```
+User: "Set up Flask API server for my project"
+```
+
+Claude will recognize the flask-smorest-api skill and:
+1. Ask for project name, features/endpoints, database needs, and port
+2. Create `{project_name}.py` with Flask app factory
+3. Generate blueprint structure for each feature
+4. Create Marshmallow schema files for validation
+5. Set up singleton manager for shared services
+6. Create `requirements.txt` with dependencies
+7. Document environment variables and startup instructions
+8. Configure Swagger UI at `/swagger`
 
 ## Repository Structure
 
