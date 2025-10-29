@@ -13,7 +13,7 @@
       "name": "byteforge-skills",
       "description": "Collection of development setup skills including PostgreSQL database setup, Python PyPI package publishing, and Flask REST API with OpenAPI/Swagger documentation",
       "source": "./",
-      "strict": false,
+      "strict": true,
       "skills": [
         "./skills/postgres-setup",
         "./skills/python-pypi-setup",
