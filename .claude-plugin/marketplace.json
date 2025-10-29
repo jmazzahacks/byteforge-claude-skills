@@ -4,36 +4,21 @@
     "name": "Jason Byteforge",
     "email": "jason@byteforge.dev"
   },
+  "metadata": {
+    "description": "Byteforge development skills collection",
+    "version": "1.0.0"
+  },
   "plugins": [
     {
-      "name": "postgres-setup",
-      "source": "./skills/postgres-setup",
-      "description": "Standardized PostgreSQL database setup pattern with schema.sql and Python setup script. Supports project-specific naming, test databases, and follows best practices for Unix timestamps, UUIDs, and idempotent operations.",
-      "version": "1.0.0",
-      "author": {
-        "name": "Jason Byteforge",
-        "github": "jmazzahacks"
-      }
-    },
-    {
-      "name": "python-pypi-setup",
-      "source": "./skills/python-pypi-setup",
-      "description": "Modern Python package setup for PyPI publishing with pyproject.toml, src layout, hatchling build system, comprehensive .gitignore, and automated build-publish script. Follows PEP 517/518 standards.",
-      "version": "1.0.0",
-      "author": {
-        "name": "Jason Byteforge",
-        "github": "jmazzahacks"
-      }
-    },
-    {
-      "name": "flask-smorest-api",
-      "source": "./skills/flask-smorest-api",
-      "description": "Production-ready Flask REST API setup with flask-smorest for automatic OpenAPI/Swagger docs, blueprint architecture, Marshmallow schemas, singleton manager pattern, and CORS support. Includes application factory, MethodView classes, and Gunicorn configuration.",
-      "version": "1.0.0",
-      "author": {
-        "name": "Jason Byteforge",
-        "github": "jmazzahacks"
-      }
+      "name": "byteforge-skills",
+      "description": "Collection of development setup skills including PostgreSQL database setup, Python PyPI package publishing, and Flask REST API with OpenAPI/Swagger documentation",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/postgres-setup",
+        "./skills/python-pypi-setup",
+        "./skills/flask-smorest-api"
+      ]
     }
   ]
 }
