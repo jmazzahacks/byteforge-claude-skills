@@ -105,6 +105,40 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 
 ---
 
+### flask-docker-deployment
+
+A skill that provides a production-ready Docker deployment pattern for Flask applications with automated versioning and container registry publishing.
+
+**What it creates:**
+- `Dockerfile` - Multi-stage production container with Gunicorn and security best practices
+- `build-publish.sh` - Automated build script with version management and --no-cache support
+- `VERSION` file - Auto-incrementing version tracking (gitignored)
+- `.gitignore` entry - Excludes VERSION file from version control
+- `.dockerignore` - Optimizes build context by excluding unnecessary files
+
+**Features:**
+- ✅ Production-grade Gunicorn WSGI server with configurable workers
+- ✅ Automated version management (auto-increment VERSION file)
+- ✅ Security hardening (non-root user, minimal base image)
+- ✅ Support for private Git dependencies via build args
+- ✅ Dual tagging (version number + latest)
+- ✅ --no-cache flag for fresh builds
+- ✅ Platform specification for compatibility (linux/amd64)
+- ✅ Works with GitHub Container Registry, Docker Hub, AWS ECR
+
+**Design Principles:**
+1. **Automated Versioning** - VERSION file auto-increments, never manually managed
+2. **Security First** - Non-root user, slim base image, build-time secrets only
+3. **Production Ready** - Gunicorn with multiple workers for concurrent requests
+4. **Idempotent Builds** - Safe to run multiple times, version always increments
+5. **Flexible Workers** - Configurable for web APIs (4 workers) or background jobs (1 worker)
+6. **Registry Agnostic** - Works with any container registry (GHCR, Docker Hub, ECR)
+7. **Cache Control** - --no-cache option for forcing fresh dependency installation
+
+[View full flask-docker-deployment documentation →](./skills/flask-docker-deployment/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -175,6 +209,21 @@ Claude will recognize the flask-smorest-api skill and:
 7. Document environment variables and startup instructions
 8. Configure Swagger UI at `/swagger`
 
+### flask-docker-deployment example:
+```
+User: "Dockerize my Flask application"
+```
+
+Claude will recognize the flask-docker-deployment skill and:
+1. Ask for Flask entry point, port, registry URL, worker count
+2. Ask if you have private Git dependencies
+3. Create `Dockerfile` with Gunicorn and security best practices
+4. Generate `build-publish.sh` with automated versioning
+5. Add `VERSION` to `.gitignore`
+6. Create `.dockerignore` for optimized builds
+7. Document build/publish commands and environment variables
+8. Provide examples for local testing and deployment
+
 ## Repository Structure
 
 ```
@@ -184,6 +233,12 @@ byteforge-claude-skills/
 │   └── marketplace.json
 ├── skills/                   # All skills
 │   ├── postgres-setup/
+│   │   └── SKILL.md
+│   ├── python-pypi-setup/
+│   │   └── SKILL.md
+│   ├── flask-smorest-api/
+│   │   └── SKILL.md
+│   ├── flask-docker-deployment/
 │   │   └── SKILL.md
 │   └── [future-skills]/
 ├── CLAUDE.md                 # Development guide
