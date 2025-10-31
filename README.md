@@ -105,6 +105,38 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 
 ---
 
+### configure-loki-logging
+
+A skill that configures Grafana Loki logging using the mazza-base utility library for structured, centralized logging.
+
+**What it creates:**
+- requirements.txt entry for mazza-base library
+- Logging initialization code with configure_logging()
+- CA certificate setup (mazza.vc_CA.pem)
+- Dockerfile updates to include certificate
+- Environment variable documentation for Loki configuration
+
+**Features:**
+- ✅ Structured JSON logging via mazza-base utility
+- ✅ Local development mode with console logs
+- ✅ Production mode with Loki integration
+- ✅ Secure connection using CA certificates
+- ✅ Application tagging for log identification
+- ✅ Automatic mode detection (debug vs production)
+- ✅ Easy integration with Flask applications
+
+**Design Principles:**
+1. **Dual Mode Operation** - Console logs for dev, Loki for production
+2. **Structured Logging** - Consistent JSON format for queryability
+3. **Secure by Default** - Uses CA certificates for encrypted connections
+4. **Environment-Based Config** - All settings via environment variables
+5. **Zero Boilerplate** - Single function call to configure logging
+6. **Centralized Logs** - All services log to same Loki instance
+
+[View full configure-loki-logging documentation →](./skills/configure-loki-logging/SKILL.md)
+
+---
+
 ### flask-docker-deployment
 
 A skill that provides a production-ready Docker deployment pattern for Flask applications with automated versioning and container registry publishing.
@@ -208,6 +240,20 @@ Claude will recognize the flask-smorest-api skill and:
 6. Create `requirements.txt` with dependencies
 7. Document environment variables and startup instructions
 8. Configure Swagger UI at `/swagger`
+
+### configure-loki-logging example:
+```
+User: "Configure Loki logging for my application"
+```
+
+Claude will recognize the configure-loki-logging skill and:
+1. Ask for application tag/name and main application file
+2. Add mazza-base to `requirements.txt` with CR_PAT setup
+3. Add `configure_logging()` call to main application file
+4. Document mazza.vc_CA.pem certificate requirement
+5. Update Dockerfile to copy CA certificate
+6. Document all required environment variables (MZ_LOKI_*, DEBUG_LOCAL, LOG_LEVEL)
+7. Provide examples for local development vs production
 
 ### flask-docker-deployment example:
 ```
