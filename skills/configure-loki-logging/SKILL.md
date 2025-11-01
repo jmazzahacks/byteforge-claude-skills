@@ -134,7 +134,7 @@ Add to README.md or .env.example:
   - Default: 'INFO'
 
 **Loki Configuration (Production Only - required when DEBUG_LOCAL=false):**
-- `MZ_LOKI_ENDPOINT` - Loki server URL (e.g., https://loki.mazza.vc/loki/api/v1/push)
+- `MZ_LOKI_ENDPOINT` - Loki server URL (e.g., https://loki.mazza.vc:8443/loki/api/v1/push)
 - `MZ_LOKI_USER` - Loki username for authentication
 - `MZ_LOKI_PASSWORD` - Loki password for authentication
 - `MZ_LOKI_CA_BUNDLE_PATH` - Path to CA certificate (e.g., /app/mazza.vc_CA.pem)
@@ -193,7 +193,7 @@ services:
 
 **NOTE**: Set these in your .env file:
 ```
-MZ_LOKI_ENDPOINT=https://loki.mazza.vc/loki/api/v1/push
+MZ_LOKI_ENDPOINT=https://loki.mazza.vc:8443/loki/api/v1/push
 MZ_LOKI_USER=your_loki_user
 MZ_LOKI_PASSWORD=your_loki_password
 ```
