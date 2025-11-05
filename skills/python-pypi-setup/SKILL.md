@@ -20,7 +20,7 @@ Use this skill when:
 1. **`pyproject.toml`** - Modern Python project configuration
 2. **`src/{package_name}/`** - Source layout with package structure
 3. **`.gitignore`** - Comprehensive Python gitignore
-4. **`requirements.txt`** - Development dependencies (build, twine)
+4. **`dev-requirements.txt`** - Development dependencies (build, twine, testing tools)
 5. **`build-publish.sh`** - Automated build and publish script
 6. **`README.md`** - Basic project documentation
 
@@ -253,16 +253,19 @@ dmypy.json
 .DS_Store
 ```
 
-## Step 5: Create requirements.txt
+## Step 5: Create dev-requirements.txt
 
-Create `requirements.txt` with development dependencies:
+Create `dev-requirements.txt` with development dependencies:
 
 ```
 build
 twine
+pytest
+black
+mypy
 ```
 
-These are the tools needed to build and publish to PyPI.
+These are the tools needed to build, publish, and develop the package. Add other dev tools as needed (isort, pytest-cov, etc.).
 
 ## Step 6: Create build-publish.sh
 
@@ -343,7 +346,7 @@ python -m venv .
 source bin/activate  # On Windows: bin\Scripts\activate
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -r dev-requirements.txt
 pip install -e .
 ```
 
@@ -387,7 +390,7 @@ Inform the user of the next steps:
 1. **Install development dependencies**:
    ```bash
    source bin/activate
-   pip install -r requirements.txt
+   pip install -r dev-requirements.txt
    ```
 
 2. **Install package in development mode**:
@@ -431,7 +434,7 @@ Claude:
 1. Creates src/awesome_lib/ directory structure
 2. Creates pyproject.toml with project metadata
 3. Creates comprehensive .gitignore
-4. Creates requirements.txt with build tools
+4. Creates dev-requirements.txt with build tools and dev dependencies
 5. Creates build-publish.sh script
 6. Creates src/awesome_lib/__init__.py
 7. Creates README.md with instructions
