@@ -202,16 +202,50 @@ Make the script executable:
 chmod +x build-publish.sh
 ```
 
-## Step 4: Update .gitignore
+## Step 4: Create Environment Configuration
 
-Add VERSION file to `.gitignore`:
+### File: `example.env`
+
+Create or update `example.env` with required environment variables for running the containerized application:
+
+```bash
+# Server Configuration
+PORT={port}
+
+# Database Configuration (if applicable)
+{PROJECT_NAME}_DB_HOST=localhost
+{PROJECT_NAME}_DB_NAME={project_name}
+{PROJECT_NAME}_DB_USER={project_name}
+{PROJECT_NAME}_DB_PASSWORD=your_password_here
+
+# Build Configuration (for private dependencies)
+CR_PAT=your_github_personal_access_token
+
+# Optional: Additional app-specific variables
+DEBUG=False
+LOG_LEVEL=INFO
+```
+
+**CRITICAL**: Replace:
+- `{port}` → Application port (e.g., 5678)
+- `{PROJECT_NAME}` → Uppercase project name (e.g., "HYPEROPT_SERVER")
+- `{project_name}` → Snake case project name (e.g., "hyperopt_server")
+
+**Note:** Remove CR_PAT if you don't have private dependencies.
+
+### Update .gitignore
+
+Add VERSION file and .env to `.gitignore`:
 
 ```gitignore
+# Environment variables
+.env
+
 # Version file (used by build system, not tracked)
 VERSION
 ```
 
-This prevents the VERSION file from being committed since it's auto-generated and incremented by the build script.
+This prevents the VERSION file and environment secrets from being committed.
 
 ## Step 5: Create .dockerignore (Optional but Recommended)
 
@@ -243,6 +277,11 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Environment files (secrets should not be in image)
+.env
+*.env
+!example.env
 
 # Testing
 .pytest_cache/
@@ -279,7 +318,23 @@ Thumbs.db
 
 ## Step 6: Usage Instructions
 
+### Setup
+
+```bash
+# Copy example environment file and configure
+cp example.env .env
+# Edit .env and fill in actual values
+```
+
 ### Building and Publishing
+
+**Load environment variables** (if using .env):
+```bash
+# Export variables from .env for build process
+set -a
+source .env
+set +a
+```
 
 **Standard build** (increments version, uses cache):
 ```bash
@@ -291,19 +346,21 @@ Thumbs.db
 ./build-publish.sh --no-cache
 ```
 
-### Environment Variables
+### Running the Container
 
-**For builds with private dependencies**, set CR_PAT before building:
-```bash
-export CR_PAT=ghp_your_github_personal_access_token
-./build-publish.sh
-```
-
-**For running the container**, set application-specific variables:
+**Using environment file:**
 ```bash
 docker run -p {port}:{port} \
-  -e DATABASE_PASSWORD=secret \
-  -e API_KEY=key123 \
+  --env-file .env \
+  {registry_url}:latest
+```
+
+**Using explicit environment variables:**
+```bash
+docker run -p {port}:{port} \
+  -e PORT={port} \
+  -e {PROJECT_NAME}_DB_PASSWORD=secret \
+  -e {PROJECT_NAME}_DB_HOST=db.example.com \
   {registry_url}:latest
 ```
 
