@@ -66,6 +66,10 @@ import logging
 from flask import Flask
 from flask_cors import CORS
 from flask_smorest import Api
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -233,27 +237,74 @@ service_manager = ServiceManager()
 - `{PROJECT_NAME}` → Uppercase project name (e.g., "MATERIA_SERVER")
 - `{project_name}` → Snake case project name (e.g., "materia_server")
 
-## Step 6: Create Requirements File
+## Step 6: Create Environment Configuration
 
-Create `requirements.txt` with flask-smorest dependencies:
+### File: `example.env`
+
+Create or update `example.env` with required environment variables:
+
+```bash
+# Server Configuration
+PORT={port_number}
+DEBUG=False
+
+# Database Configuration (if applicable)
+{PROJECT_NAME}_DB_HOST=localhost
+{PROJECT_NAME}_DB_NAME={project_name}
+{PROJECT_NAME}_DB_USER={project_name}
+{PROJECT_NAME}_DB_PASSWORD=your_password_here
+
+# Optional: CORS Configuration
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
+```
+
+**CRITICAL**: Replace:
+- `{port_number}` → Actual port number (e.g., 5151)
+- `{PROJECT_NAME}` → Uppercase project name (e.g., "MATERIA_SERVER")
+- `{project_name}` → Snake case project name (e.g., "materia_server")
+
+### File: `.env` (gitignored)
+
+Instruct the user to copy `example.env` to `.env` and fill in actual values:
+
+```bash
+# Copy example.env to .env and update with actual values
+cp example.env .env
+```
+
+### Update .gitignore
+
+Add `.env` to `.gitignore` if not already present:
+
+```
+# Environment variables
+.env
+```
+
+## Step 7: Create Requirements File
+
+Create `requirements.txt` with flask-smorest dependencies (no version pinning):
 
 ```txt
 # Flask and API framework
-Flask==3.0.0
-flask-smorest==0.44.0
-flask-cors==4.0.0
+Flask
+flask-smorest
+flask-cors
 
 # Schema validation and serialization
-marshmallow==3.20.1
+marshmallow
+
+# Environment variable management
+python-dotenv
 
 # Production server (optional but recommended)
-gunicorn==21.2.0
+gunicorn
 
 # Database (if needed)
-psycopg2-binary==2.9.9
+psycopg2-binary
 ```
 
-## Step 7: Create Blueprints __init__.py
+## Step 8: Create Blueprints __init__.py
 
 Create `blueprints/__init__.py`:
 
@@ -265,9 +316,20 @@ Each blueprint represents a distinct feature or resource endpoint.
 """
 ```
 
-## Step 8: Document Usage
+## Step 9: Document Usage
 
 Create or update README.md with:
+
+### Setup
+
+```bash
+# Copy example environment file
+cp example.env .env
+
+# Edit .env and fill in actual values
+# Then install dependencies
+pip install -r requirements.txt
+```
 
 ### Running the Server
 
@@ -280,6 +342,8 @@ gunicorn -w 4 -b 0.0.0.0:{port_number} '{project_name}:create_app()'
 ```
 
 ### Environment Variables
+
+Copy `example.env` to `.env` and configure:
 
 **Server Configuration:**
 - `PORT` - Server port (default: {port_number})
