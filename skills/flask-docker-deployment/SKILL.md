@@ -64,7 +64,7 @@ Before using this skill, ensure:
 Create `Dockerfile` in the project root:
 
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # Build argument for GitHub Personal Access Token (if needed for private deps)
 ARG CR_PAT
@@ -117,7 +117,7 @@ CMD ["gunicorn", "--bind", "0.0.0.0:{port}", "--workers", "{workers}", "{module}
 
 Simplified version without private deps:
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -573,13 +573,13 @@ For smaller images, use multi-stage builds:
 
 ```dockerfile
 # Build stage
-FROM python:3.11-slim as builder
+FROM python:3.13-slim as builder
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
 
 # Runtime stage
-FROM python:3.11-slim
+FROM python:3.13-slim
 WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 COPY . .
