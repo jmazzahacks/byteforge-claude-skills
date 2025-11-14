@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "byteforge-skills",
-      "description": "Collection of development setup skills including PostgreSQL database setup, Python PyPI package publishing, Flask REST API with OpenAPI/Swagger documentation, Flask Docker deployment, and Grafana Loki logging configuration",
+      "description": "Collection of development setup skills including PostgreSQL database setup, Python PyPI package publishing, Flask REST API with OpenAPI/Swagger documentation, Flask Docker deployment, and Mazza-specific Grafana Loki logging configuration",
       "source": "./",
       "strict": true,
       "skills": [
@@ -19,7 +19,7 @@
         "./skills/python-pypi-setup",
         "./skills/flask-smorest-api",
         "./skills/flask-docker-deployment",
-        "./skills/configure-loki-logging"
+        "./skills/mz-configure-loki-logging"
       ]
     }
   ]
