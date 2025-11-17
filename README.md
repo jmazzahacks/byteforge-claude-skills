@@ -75,12 +75,13 @@ A skill that provides a modern, standardized pattern for setting up Python packa
 A skill that provides a production-ready pattern for building Flask REST APIs with automatic OpenAPI/Swagger documentation.
 
 **What it creates:**
-- Main application file with Flask app factory pattern
+- Main application file with Flask app factory pattern and dotenv support
 - Blueprint architecture for modular endpoint organization
 - Marshmallow schema files for validation and documentation
 - Singleton manager for shared service instances
+- `example.env` with all required environment variables
 - CORS support and error handling
-- `requirements.txt` with all dependencies
+- `requirements.txt` with all dependencies (unpinned)
 
 **Features:**
 - ✅ Automatic OpenAPI/Swagger documentation via flask-smorest
@@ -91,6 +92,8 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 - ✅ CORS support for frontend integration
 - ✅ Application factory pattern for testing
 - ✅ Gunicorn production server support
+- ✅ python-dotenv for environment variable management
+- ✅ example.env pattern for configuration
 
 **Design Principles:**
 1. **Blueprint Organization** - One blueprint per feature/resource
@@ -98,42 +101,10 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 3. **Singleton Manager** - Centralized service initialization
 4. **Application Factory** - `create_app()` pattern for flexibility
 5. **OpenAPI/Swagger** - Automatic documentation generation
-6. **Environment-Based Config** - All secrets via environment variables
+6. **Environment-Based Config** - All secrets via environment variables with example.env
 7. **Production Ready** - Gunicorn support out of the box
 
 [View full flask-smorest-api documentation →](./skills/flask-smorest-api/SKILL.md)
-
----
-
-### configure-loki-logging
-
-A skill that configures Grafana Loki logging using the mazza-base utility library for structured, centralized logging.
-
-**What it creates:**
-- requirements.txt entry for mazza-base library
-- Logging initialization code with configure_logging()
-- CA certificate setup (mazza.vc_CA.pem)
-- Dockerfile updates to include certificate
-- Environment variable documentation for Loki configuration
-
-**Features:**
-- ✅ Structured JSON logging via mazza-base utility
-- ✅ Local development mode with console logs
-- ✅ Production mode with Loki integration
-- ✅ Secure connection using CA certificates
-- ✅ Application tagging for log identification
-- ✅ Automatic mode detection (debug vs production)
-- ✅ Easy integration with Flask applications
-
-**Design Principles:**
-1. **Dual Mode Operation** - Console logs for dev, Loki for production
-2. **Structured Logging** - Consistent JSON format for queryability
-3. **Secure by Default** - Uses CA certificates for encrypted connections
-4. **Environment-Based Config** - All settings via environment variables
-5. **Zero Boilerplate** - Single function call to configure logging
-6. **Centralized Logs** - All services log to same Loki instance
-
-[View full configure-loki-logging documentation →](./skills/configure-loki-logging/SKILL.md)
 
 ---
 
@@ -142,13 +113,15 @@ A skill that configures Grafana Loki logging using the mazza-base utility librar
 A skill that provides a production-ready Docker deployment pattern for Flask applications with automated versioning and container registry publishing.
 
 **What it creates:**
-- `Dockerfile` - Multi-stage production container with Gunicorn and security best practices
+- `Dockerfile` - Production container with Python 3.13, Gunicorn, and security best practices
 - `build-publish.sh` - Automated build script with version management and --no-cache support
+- `example.env` - Environment variables for container configuration
 - `VERSION` file - Auto-incrementing version tracking (gitignored)
-- `.gitignore` entry - Excludes VERSION file from version control
-- `.dockerignore` - Optimizes build context by excluding unnecessary files
+- `.gitignore` entry - Excludes VERSION and .env files
+- `.dockerignore` - Optimizes build context by excluding unnecessary files (including .env)
 
 **Features:**
+- ✅ Python 3.13-slim base image
 - ✅ Production-grade Gunicorn WSGI server with configurable workers
 - ✅ Automated version management (auto-increment VERSION file)
 - ✅ Security hardening (non-root user, minimal base image)
@@ -157,6 +130,8 @@ A skill that provides a production-ready Docker deployment pattern for Flask app
 - ✅ --no-cache flag for fresh builds
 - ✅ Platform specification for compatibility (linux/amd64)
 - ✅ Works with GitHub Container Registry, Docker Hub, AWS ECR
+- ✅ example.env pattern for environment configuration
+- ✅ docker run --env-file support
 
 **Design Principles:**
 1. **Automated Versioning** - VERSION file auto-increments, never manually managed
@@ -166,6 +141,7 @@ A skill that provides a production-ready Docker deployment pattern for Flask app
 5. **Flexible Workers** - Configurable for web APIs (4 workers) or background jobs (1 worker)
 6. **Registry Agnostic** - Works with any container registry (GHCR, Docker Hub, ECR)
 7. **Cache Control** - --no-cache option for forcing fresh dependency installation
+8. **Environment Configuration** - example.env pattern with .env gitignored
 
 [View full flask-docker-deployment documentation →](./skills/flask-docker-deployment/SKILL.md)
 
@@ -241,20 +217,6 @@ Claude will recognize the flask-smorest-api skill and:
 7. Document environment variables and startup instructions
 8. Configure Swagger UI at `/swagger`
 
-### configure-loki-logging example:
-```
-User: "Configure Loki logging for my application"
-```
-
-Claude will recognize the configure-loki-logging skill and:
-1. Ask for application tag/name and main application file
-2. Add mazza-base to `requirements.txt` with CR_PAT setup
-3. Add `configure_logging()` call to main application file
-4. Document mazza.vc_CA.pem certificate requirement
-5. Update Dockerfile to copy CA certificate
-6. Document all required environment variables (MZ_LOKI_*, DEBUG_LOCAL, LOG_LEVEL)
-7. Provide examples for local development vs production
-
 ### flask-docker-deployment example:
 ```
 User: "Dockerize my Flask application"
@@ -274,10 +236,10 @@ Claude will recognize the flask-docker-deployment skill and:
 
 ```
 byteforge-claude-skills/
-├── .claude-plugin/           # Plugin marketplace metadata
+├── .claude-plugin/              # Plugin marketplace metadata
 │   ├── plugin.json
 │   └── marketplace.json
-├── skills/                   # All skills
+├── skills/                      # All skills
 │   ├── postgres-setup/
 │   │   └── SKILL.md
 │   ├── python-pypi-setup/
@@ -286,9 +248,10 @@ byteforge-claude-skills/
 │   │   └── SKILL.md
 │   ├── flask-docker-deployment/
 │   │   └── SKILL.md
-│   └── [future-skills]/
-├── CLAUDE.md                 # Development guide
-└── README.md                 # This file
+│   └── mz-configure-loki-logging/  # Mazza-specific (not documented here)
+│       └── SKILL.md
+├── CLAUDE.md                    # Development guide
+└── README.md                    # This file
 ```
 
 ## Contributing
