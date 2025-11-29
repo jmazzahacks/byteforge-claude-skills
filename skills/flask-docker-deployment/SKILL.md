@@ -70,8 +70,9 @@ FROM python:3.13-slim
 ARG CR_PAT
 ENV CR_PAT=${CR_PAT}
 
-# Install git if you have private GitHub dependencies
+# Install curl (for health checks) and git (for private GitHub dependencies)
 RUN apt-get update && apt-get install -y \
+    curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -118,6 +119,11 @@ CMD ["gunicorn", "--bind", "0.0.0.0:{port}", "--workers", "{workers}", "{module}
 Simplified version without private deps:
 ```dockerfile
 FROM python:3.13-slim
+
+# Install curl for health checks
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -580,6 +586,12 @@ RUN pip install --user --no-cache-dir -r requirements.txt
 
 # Runtime stage
 FROM python:3.13-slim
+
+# Install curl for health checks
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 COPY . .
@@ -593,3 +605,4 @@ This pattern:
 - Installs dependencies in builder stage
 - Copies only installed packages to runtime
 - Results in smaller final image
+- Includes curl for health checks
