@@ -89,8 +89,8 @@ Database setup script for {PROJECT_NAME}
 Creates the {project_name} database and user with proper permissions, then applies database/schema.sql
 
 Usage:
-  python setup_database.py                 # Sets up main '{project_name}' database
-  python setup_database.py --test-db       # Sets up test '{project_name}_test' database
+  python setup_database.py --pg-password <postgres_password>
+  python setup_database.py --pg-password <postgres_password> --test-db
 """
 
 import os
@@ -103,6 +103,8 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 def main():
     """Setup {project_name} database and user"""
     parser = argparse.ArgumentParser(description='Setup {PROJECT_NAME} database')
+    parser.add_argument('--pg-password', required=True,
+                       help='PostgreSQL superuser password (required)')
     parser.add_argument('--test-db', action='store_true',
                        help='Create {project_name}_test database instead of main {project_name} database')
     args = parser.parse_args()
@@ -110,7 +112,7 @@ def main():
     pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
     pg_port = os.environ.get('POSTGRES_PORT', '5432')
     pg_user = os.environ.get('POSTGRES_USER', 'postgres')
-    pg_password = os.environ.get('PG_PASSWORD', None)
+    pg_password = args.pg_password
 
     if args.test_db:
         {project_name}_db = '{project_name}_test'
@@ -120,9 +122,6 @@ def main():
     {project_name}_user = os.environ.get('{PROJECT_NAME}_PG_USER', '{project_name}')
     {project_name}_password = os.environ.get('{PROJECT_NAME}_PG_PASSWORD', None)
 
-    if pg_password is None:
-        print("Error: PG_PASSWORD environment variable is required")
-        sys.exit(1)
     if {project_name}_password is None:
         print("Error: {PROJECT_NAME}_PG_PASSWORD environment variable is required")
         sys.exit(1)
@@ -215,10 +214,17 @@ if __name__ == "__main__":
 
 Add a section to the project's README.md (or create SETUP.md) documenting:
 
-### Environment Variables Required
+### Command Line Arguments
 
-**Global (PostgreSQL superuser)**:
-- `PG_PASSWORD` - PostgreSQL superuser password
+**Required:**
+- `--pg-password` - PostgreSQL superuser password
+
+**Optional:**
+- `--test-db` - Create test database instead of main database
+
+### Environment Variables
+
+**PostgreSQL connection (optional)**:
 - `POSTGRES_HOST` - PostgreSQL host (default: localhost)
 - `POSTGRES_PORT` - PostgreSQL port (default: 5432)
 - `POSTGRES_USER` - PostgreSQL superuser (default: postgres)
@@ -232,14 +238,13 @@ Add a section to the project's README.md (or create SETUP.md) documenting:
 
 ```bash
 # Set required environment variables
-export PG_PASSWORD="your_postgres_password"
 export {PROJECT_NAME}_PG_PASSWORD="your_app_password"
 
-# Run setup script
-python dev_scripts/setup_database.py
+# Run setup script (pass postgres superuser password as argument)
+python dev_scripts/setup_database.py --pg-password "your_postgres_password"
 
 # For test database
-python dev_scripts/setup_database.py --test-db
+python dev_scripts/setup_database.py --pg-password "your_postgres_password" --test-db
 ```
 
 ## Step 6: Make Script Executable
