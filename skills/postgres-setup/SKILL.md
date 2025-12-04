@@ -90,6 +90,7 @@ Creates the {project_name} database and user with proper permissions, then appli
 
 Usage:
   python setup_database.py --pg-password <postgres_password>
+  python setup_database.py --pg-password <postgres_password> --pg-user <superuser>
   python setup_database.py --pg-password <postgres_password> --test-db
 """
 
@@ -105,13 +106,15 @@ def main():
     parser = argparse.ArgumentParser(description='Setup {PROJECT_NAME} database')
     parser.add_argument('--pg-password', required=True,
                        help='PostgreSQL superuser password (required)')
+    parser.add_argument('--pg-user', default='postgres',
+                       help='PostgreSQL superuser name (default: postgres)')
     parser.add_argument('--test-db', action='store_true',
                        help='Create {project_name}_test database instead of main {project_name} database')
     args = parser.parse_args()
 
     pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
     pg_port = os.environ.get('POSTGRES_PORT', '5432')
-    pg_user = os.environ.get('POSTGRES_USER', 'postgres')
+    pg_user = args.pg_user
     pg_password = args.pg_password
 
     if args.test_db:
@@ -220,6 +223,7 @@ Add a section to the project's README.md (or create SETUP.md) documenting:
 - `--pg-password` - PostgreSQL superuser password
 
 **Optional:**
+- `--pg-user` - PostgreSQL superuser name (default: postgres)
 - `--test-db` - Create test database instead of main database
 
 ### Environment Variables
@@ -227,7 +231,6 @@ Add a section to the project's README.md (or create SETUP.md) documenting:
 **PostgreSQL connection (optional)**:
 - `POSTGRES_HOST` - PostgreSQL host (default: localhost)
 - `POSTGRES_PORT` - PostgreSQL port (default: 5432)
-- `POSTGRES_USER` - PostgreSQL superuser (default: postgres)
 
 **Project-specific**:
 - `{PROJECT_NAME}_PG_DB` - Database name (default: {project_name})
@@ -242,6 +245,9 @@ export {PROJECT_NAME}_PG_PASSWORD="your_app_password"
 
 # Run setup script (pass postgres superuser password as argument)
 python dev_scripts/setup_database.py --pg-password "your_postgres_password"
+
+# With custom superuser name
+python dev_scripts/setup_database.py --pg-password "your_postgres_password" --pg-user "admin"
 
 # For test database
 python dev_scripts/setup_database.py --pg-password "your_postgres_password" --test-db
