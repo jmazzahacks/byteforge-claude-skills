@@ -5,7 +5,7 @@ description: Set up Flask REST API with flask-smorest, OpenAPI/Swagger docs, and
 
 # Flask REST API with flask-smorest Pattern
 
-This skill helps you set up a Flask REST API following a standardized pattern with flask-smorest for OpenAPI documentation, blueprint architecture, and best practices for production-ready APIs.
+This skill helps you set up a Flask REST API following a standardized pattern with flask-smorest for OpenAPI documentation, blueprint architecture, and dataclass models for request/response handling.
 
 ## When to Use This Skill
 
@@ -13,14 +13,14 @@ Use this skill when:
 - Starting a new Flask REST API project
 - You want automatic OpenAPI/Swagger documentation
 - You need a clean, modular blueprint architecture
-- You want type-safe request/response handling with Marshmallow schemas
+- You want type-safe data models using dataclasses with to_dict/from_dict patterns
 - You're building a production-ready API server
 
 ## What This Skill Creates
 
 1. **Main application file** - Flask app initialization with flask-smorest
 2. **Blueprint structure** - Modular endpoint organization
-3. **Schema files** - Marshmallow schemas for validation and docs
+3. **Data models** - Dataclasses with to_dict/from_dict methods and validation
 4. **Singleton manager pattern** - Centralized service/database initialization
 5. **CORS support** - Cross-origin request handling
 6. **Requirements file** - All necessary dependencies
@@ -49,10 +49,10 @@ Create these directories if they don't exist:
 {project_root}/
 ├── blueprints/          # Blueprint modules (one per feature)
 │   ├── __init__.py
-│   ├── {feature}.py
-│   └── {feature}_schemas.py
-├── src/                 # Optional: for package code (database drivers, models, etc.)
-│   └── {project_name}/
+│   └── {feature}.py
+├── models/              # Dataclass models with to_dict/from_dict
+│   ├── __init__.py
+│   └── {feature}.py
 └── {project_name}.py    # Main application file
 ```
 
@@ -105,59 +105,182 @@ if __name__ == '__main__':
 - `{port_number}` → Actual port number (e.g., 5151)
 - `{feature}` → Feature name from user's response
 
-## Step 4: Create Blueprint and Schema Files
+## Step 4: Create Data Models
 
-For each feature/endpoint, create two files:
+For each feature, create a models file with dataclasses that include `to_dict` and `from_dict` methods:
+
+### File: `models/{feature}.py`
+
+```python
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class {Feature}:
+    """
+    {Feature} data model.
+
+    Includes validation in from_dict and serialization via to_dict.
+    """
+    id: str
+    name: str
+    created_at: int
+    updated_at: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary for JSON response."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "{Feature}":
+        """
+        Create instance from dictionary with validation.
+
+        Args:
+            data: Dictionary with {feature} data
+
+        Returns:
+            {Feature} instance
+
+        Raises:
+            ValueError: If required fields are missing or invalid
+        """
+        if "id" not in data:
+            raise ValueError("id is required")
+        if "name" not in data:
+            raise ValueError("name is required")
+        if "created_at" not in data:
+            raise ValueError("created_at is required")
+
+        return cls(
+            id=str(data["id"]),
+            name=str(data["name"]),
+            created_at=int(data["created_at"]),
+            updated_at=int(data["updated_at"]) if data.get("updated_at") else None
+        )
+```
+
+**CRITICAL**: Replace:
+- `{Feature}` → PascalCase feature name (e.g., "TradableToken")
+- `{feature}` → Snake case feature name (e.g., "tradable_token")
+
+## Step 5: Create Blueprint Files
+
+For each feature/endpoint, create a blueprint file:
 
 ### File: `blueprints/{feature}.py`
 
 ```python
+import logging
+from flask import request, jsonify
 from flask.views import MethodView
 from flask_smorest import Blueprint, abort
-from .{feature}_schemas import {Feature}QuerySchema, {Feature}ResponseSchema, ErrorResponseSchema
+
+from models.{feature} import {Feature}
+
+logger = logging.getLogger(__name__)
 
 blp = Blueprint('{feature}', __name__, url_prefix='/api', description='{Feature} API')
 
+
 @blp.route('/{feature}')
-class {Feature}Resource(MethodView):
-    @blp.arguments({Feature}QuerySchema, location='query')
-    @blp.response(200, {Feature}ResponseSchema)
-    @blp.alt_response(400, schema=ErrorResponseSchema)
-    @blp.alt_response(500, schema=ErrorResponseSchema)
-    def get(self, query_args):
+class {Feature}ListResource(MethodView):
+    def get(self):
+        """Get list of {feature}s."""
         try:
-            # TODO: Implement logic
-            return {"message": "Success", "data": []}
+            limit = request.args.get('limit', 100, type=int)
+            offset = request.args.get('offset', 0, type=int)
+
+            # TODO: Implement logic to fetch {feature}s
+            items = []
+
+            return jsonify({
+                "data": [item.to_dict() for item in items],
+                "limit": limit,
+                "offset": offset
+            })
         except ValueError as e:
+            logger.warning(f"Bad request: {e}")
             abort(400, message=str(e))
         except Exception as e:
-            abort(500, message=str(e))
-```
+            logger.exception(f"Error fetching {feature}s: {e}")
+            abort(500, message="Internal server error")
 
-### File: `blueprints/{feature}_schemas.py`
+    def post(self):
+        """Create a new {feature}."""
+        try:
+            data = request.get_json()
+            if not data:
+                abort(400, message="Request body is required")
 
-```python
-from marshmallow import Schema, fields
+            item = {Feature}.from_dict(data)
 
-class {Feature}QuerySchema(Schema):
-    limit = fields.Integer(load_default=100, metadata={'description': 'Max results'})
-    offset = fields.Integer(load_default=0, metadata={'description': 'Skip count'})
+            # TODO: Implement logic to save {feature}
 
-class {Feature}ResponseSchema(Schema):
-    message = fields.String(required=True)
-    data = fields.List(fields.Dict(), required=True)
+            return jsonify(item.to_dict()), 201
+        except ValueError as e:
+            logger.warning(f"Validation error: {e}")
+            abort(400, message=str(e))
+        except Exception as e:
+            logger.exception(f"Error creating {feature}: {e}")
+            abort(500, message="Internal server error")
 
-class ErrorResponseSchema(Schema):
-    code = fields.Integer(required=True)
-    status = fields.String(required=True)
-    message = fields.String()
+
+@blp.route('/{feature}/<string:item_id>')
+class {Feature}Resource(MethodView):
+    def get(self, item_id: str):
+        """Get a single {feature} by ID."""
+        try:
+            # TODO: Implement logic to fetch {feature} by ID
+            item = None
+
+            if not item:
+                abort(404, message=f"{Feature} not found: {item_id}")
+
+            return jsonify(item.to_dict())
+        except Exception as e:
+            logger.exception(f"Error fetching {feature}: {e}")
+            abort(500, message="Internal server error")
+
+    def put(self, item_id: str):
+        """Update a {feature}."""
+        try:
+            data = request.get_json()
+            if not data:
+                abort(400, message="Request body is required")
+
+            # TODO: Implement logic to update {feature}
+
+            return jsonify({"message": "Updated"})
+        except ValueError as e:
+            logger.warning(f"Validation error: {e}")
+            abort(400, message=str(e))
+        except Exception as e:
+            logger.exception(f"Error updating {feature}: {e}")
+            abort(500, message="Internal server error")
+
+    def delete(self, item_id: str):
+        """Delete a {feature}."""
+        try:
+            # TODO: Implement logic to delete {feature}
+
+            return jsonify({"message": "Deleted"})
+        except Exception as e:
+            logger.exception(f"Error deleting {feature}: {e}")
+            abort(500, message="Internal server error")
 ```
 
 **CRITICAL**: Replace:
-- `{Feature}` → PascalCase feature name (e.g., "TradableTokens")
-- `{feature}` → Snake case feature name (e.g., "tradable_tokens")
+- `{Feature}` → PascalCase feature name (e.g., "TradableToken")
+- `{feature}` → Snake case feature name (e.g., "tradable_token")
 
-## Step 5: Create Common Singleton Manager (If Needed)
+## Step 6: Create Common Singleton Manager (If Needed)
 
 If the project needs shared services (database, API clients, etc.), create a singleton manager:
 
@@ -237,7 +360,7 @@ service_manager = ServiceManager()
 - `{PROJECT_NAME}` → Uppercase project name (e.g., "MATERIA_SERVER")
 - `{project_name}` → Snake case project name (e.g., "materia_server")
 
-## Step 6: Create Environment Configuration
+## Step 7: Create Environment Configuration
 
 ### File: `example.env`
 
@@ -281,18 +404,15 @@ Add `.env` to `.gitignore` if not already present:
 .env
 ```
 
-## Step 7: Create Requirements File
+## Step 8: Create Requirements File
 
-Create `requirements.txt` with flask-smorest dependencies (no version pinning):
+Create `requirements.txt` with dependencies (no version pinning):
 
 ```txt
 # Flask and API framework
 Flask
 flask-smorest
 flask-cors
-
-# Schema validation and serialization
-marshmallow
 
 # Environment variable management
 python-dotenv
@@ -304,7 +424,7 @@ gunicorn
 psycopg2-binary
 ```
 
-## Step 8: Create Blueprints __init__.py
+## Step 9: Create Blueprints __init__.py
 
 Create `blueprints/__init__.py`:
 
@@ -316,7 +436,7 @@ Each blueprint represents a distinct feature or resource endpoint.
 """
 ```
 
-## Step 9: Document Usage
+## Step 10: Document Usage
 
 Create or update README.md with:
 
@@ -369,16 +489,21 @@ This pattern follows these principles:
 ### Architecture:
 1. **Blueprint Organization** - Modular endpoint organization, one blueprint per feature
 2. **MethodView Classes** - Class-based views for HTTP methods (get, post, put, delete)
-3. **Separation of Concerns** - Routes, schemas, and business logic separated
+3. **Separation of Concerns** - Routes, models, and business logic separated
 4. **Singleton Manager** - Centralized service initialization prevents duplicate connections
 5. **Application Factory** - `create_app()` pattern for testing and flexibility
 
+### Data Models:
+1. **Dataclasses** - Type-safe data models using Python dataclasses
+2. **to_dict/from_dict** - Consistent serialization and deserialization pattern
+3. **Validation in from_dict** - Input validation with clear error messages
+4. **Self-Contained** - Each model handles its own validation and serialization
+
 ### API Design:
 1. **OpenAPI/Swagger** - Automatic documentation via flask-smorest
-2. **Schema-Driven** - Marshmallow schemas for validation and serialization
-3. **Type Safety** - `@blp.arguments()` and `@blp.response()` decorators
-4. **Error Handling** - Consistent error responses with proper HTTP status codes
-5. **CORS Support** - Cross-origin requests for frontend consumption
+2. **Error Handling** - Consistent error responses with proper HTTP status codes
+3. **CORS Support** - Cross-origin requests for frontend consumption
+4. **JSON Responses** - All endpoints return JSON via jsonify()
 
 ### Best Practices:
 1. **Environment-Based Config** - All secrets via environment variables
@@ -430,25 +555,15 @@ User: "Set up Python package for PyPI"
 
 **Claude:**
 1. Creates `crypto_tracker.py` with Flask app
-2. Creates `blueprints/` directory with:
-   - `prices.py` and `prices_schemas.py`
-   - `tokens.py` and `tokens_schemas.py`
-   - `portfolio.py` and `portfolio_schemas.py`
-3. Creates `common.py` with ServiceManager singleton
-4. Creates `requirements.txt` with dependencies
-5. Documents environment variables needed
-6. Provides startup instructions
+2. Creates `models/` directory with dataclass models:
+   - `prices.py`, `tokens.py`, `portfolio.py`
+3. Creates `blueprints/` directory with endpoint handlers:
+   - `prices.py`, `tokens.py`, `portfolio.py`
+4. Creates `common.py` with ServiceManager singleton
+5. Creates `requirements.txt` with dependencies
+6. Documents environment variables needed
+7. Provides startup instructions
 
 ## Optional: Docker Support
 
-If user requests Docker, create `Dockerfile`:
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE {port_number}
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:{port_number}", "{project_name}:create_app()"]
-```
+If user requests Docker, reference the **flask-docker-deployment** skill for production-ready containerization with automated versioning and health checks.
