@@ -22,7 +22,8 @@ Use this skill when:
 3. **`.gitignore`** - Comprehensive Python gitignore
 4. **`dev-requirements.txt`** - Development dependencies (build, twine, testing tools)
 5. **`build-publish.sh`** - Automated build and publish script
-6. **`README.md`** - Basic project documentation
+6. **`LICENSE`** - License file (Proprietary, MIT, or O'Saasy)
+7. **`README.md`** - Basic project documentation
 
 ## Step 1: Gather Project Information
 
@@ -42,7 +43,10 @@ Use this skill when:
 
 5. **"What is your GitHub username?"** (for project URLs)
 
-6. **"What license do you want to use?"** (options: MIT, Apache-2.0, GPL-3.0, BSD-3-Clause)
+6. **"What license do you want to use?"** (options: Proprietary, MIT, O'Saasy)
+   - **Proprietary**: All rights reserved, no open source distribution
+   - **MIT**: Permissive open source, allows commercial use
+   - **O'Saasy**: Modified MIT that reserves commercial SaaS rights for the copyright holder (see https://osaasy.dev/)
 
 7. **"What Python version should be the minimum requirement?"** (default: 3.8)
 
@@ -78,7 +82,7 @@ requires-python = ">={python_version}"
 license = {text = "{license_name} License"}
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: {license_classifier}",
+    "{license_classifier}",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -105,16 +109,23 @@ Issues = "https://github.com/{github_username}/{project-name}/issues"
 - `{project_description}` → one-line description
 - `{keywords_list}` → comma-separated quoted keywords (e.g., `"podcasting", "rss", "parser"`) or empty
 - `{python_version}` → minimum Python version (e.g., `3.8`)
-- `{license_name}` → license name (e.g., `MIT`, `Apache-2.0`)
-- `{license_classifier}` → OSI classifier (e.g., `MIT License`, `Apache Software License`)
+- `{license_name}` → license name (e.g., `MIT`, `O'Saasy`, `Proprietary - All Rights Reserved`)
+- `{license_classifier}` → Full classifier string:
+  - MIT: `License :: OSI Approved :: MIT License`
+  - O'Saasy: `License :: Other/Proprietary License`
+  - Proprietary: `License :: Other/Proprietary License`
 - `{dependencies_list}` → comma-separated quoted dependencies (e.g., `'requests', 'beautifulsoup4'`) or empty
 - `{github_username}` → GitHub username
 
 **License Classifiers Mapping**:
+- Proprietary → `Other/Proprietary License`
 - MIT → `MIT License`
-- Apache-2.0 → `Apache Software License`
-- GPL-3.0 → `GNU General Public License v3 (GPLv3)`
-- BSD-3-Clause → `BSD License`
+- O'Saasy → `Other/Proprietary License` (modified MIT with SaaS restrictions)
+
+**License Text Handling**:
+- **Proprietary**: Use `license = {text = "Proprietary - All Rights Reserved"}`
+- **MIT**: Use `license = {text = "MIT License"}`
+- **O'Saasy**: Use `license = {text = "O'Saasy License"}` and create LICENSE file from https://osaasy.dev/
 
 ## Step 4: Create Comprehensive .gitignore
 
@@ -311,7 +322,79 @@ Create the basic package structure:
    # __all__ = ['ClassName', 'function_name']
    ```
 
-## Step 8: Create README.md
+## Step 8: Create LICENSE File
+
+Create the appropriate LICENSE file based on the user's license choice:
+
+### For MIT License:
+```
+MIT License
+
+Copyright (c) {year} {author_name}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### For O'Saasy License:
+Download the license text from https://osaasy.dev/ and replace `<Year>` and `<Copyright Holder>` with appropriate values:
+```
+O'Saasy License
+
+Copyright (c) {year} {author_name}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to use, copy,
+modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+2. The licensee may not use the Software to directly compete with the original
+   Licensor by offering it to third parties as a hosted, managed, or
+   Software-as-a-Service (SaaS) product or cloud service.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### For Proprietary License:
+```
+Proprietary License
+
+Copyright (c) {year} {author_name}. All rights reserved.
+
+This software and associated documentation files (the "Software") are proprietary
+and confidential. Unauthorized copying, modification, distribution, or use of
+this Software, via any medium, is strictly prohibited.
+
+The Software is provided for use only by authorized licensees under the terms
+of a separate written agreement with the copyright holder.
+```
+
+## Step 9: Create README.md
 
 Create `README.md` with basic project documentation:
 
@@ -367,14 +450,14 @@ pip install -e .
 {author_name} ({author_email})
 ```
 
-## Step 9: Make Script Executable
+## Step 10: Make Script Executable
 
 Run:
 ```bash
 chmod +x build-publish.sh
 ```
 
-## Step 10: Create Initial Git Repository (if needed)
+## Step 11: Create Initial Git Repository (if needed)
 
 If not already a git repository:
 ```bash
@@ -383,7 +466,7 @@ git add .
 git commit -m "Initial project structure for PyPI package"
 ```
 
-## Step 11: Document Next Steps
+## Step 12: Document Next Steps
 
 Inform the user of the next steps:
 
@@ -429,14 +512,15 @@ This pattern follows these principles:
 User: "Set up a Python package for PyPI"
 Claude: "What is your project name?"
 User: "awesome-lib"
-Claude: [Asks remaining questions]
+Claude: [Asks remaining questions including license: Proprietary, MIT, or O'Saasy]
 Claude:
 1. Creates src/awesome_lib/ directory structure
 2. Creates pyproject.toml with project metadata
 3. Creates comprehensive .gitignore
 4. Creates dev-requirements.txt with build tools and dev dependencies
 5. Creates build-publish.sh script
-6. Creates src/awesome_lib/__init__.py
-7. Creates README.md with instructions
-8. Makes script executable
-9. Documents next steps for the user
+6. Creates LICENSE file (based on user's choice)
+7. Creates src/awesome_lib/__init__.py
+8. Creates README.md with instructions
+9. Makes script executable
+10. Documents next steps for the user

@@ -54,7 +54,7 @@ A skill that provides a modern, standardized pattern for setting up Python packa
 - ✅ Comprehensive .gitignore for Python projects
 - ✅ Automated build-publish script with venv activation
 - ✅ Parameterized project setup (interactive questions)
-- ✅ License selection (MIT, Apache-2.0, GPL-3.0, BSD-3-Clause)
+- ✅ License selection (Proprietary, MIT, O'Saasy)
 - ✅ Proper PyPI classifiers and metadata
 
 **Design Principles:**
