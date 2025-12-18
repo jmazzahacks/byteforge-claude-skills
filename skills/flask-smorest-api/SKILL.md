@@ -1,6 +1,6 @@
 ---
 name: flask-smorest-api
-description: Set up Flask REST API with flask-smorest, OpenAPI/Swagger docs, and blueprint architecture
+description: Set up Flask REST API with flask-smorest, OpenAPI docs, blueprint architecture, and dataclass models. Use when creating a new Flask API server, building REST endpoints, or setting up a production API.
 ---
 
 # Flask REST API with flask-smorest Pattern

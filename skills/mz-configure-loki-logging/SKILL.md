@@ -1,6 +1,6 @@
 ---
 name: mz-configure-loki-logging
-description: Configure Grafana Loki logging using mazza-base library for Python/Flask applications with CA certificate (Mazza-specific)
+description: Configure Grafana Loki logging using mazza-base library for Python/Flask applications with CA certificate (Mazza-specific). Use when setting up Loki logging for Mazza projects or configuring centralized logging.
 ---
 
 # Loki Logging with mazza-base

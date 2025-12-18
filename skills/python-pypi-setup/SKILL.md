@@ -1,6 +1,6 @@
 ---
 name: python-pypi-setup
-description: Set up Python project for PyPI publishing with pyproject.toml, src layout, and build scripts
+description: Set up Python project for PyPI publishing with pyproject.toml, src layout, and build scripts. Use when creating a new Python package, setting up for PyPI distribution, or initializing a Python library project.
 ---
 
 # Python PyPI Project Setup Pattern

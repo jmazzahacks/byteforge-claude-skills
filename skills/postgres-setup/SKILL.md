@@ -1,6 +1,6 @@
 ---
 name: postgres-setup
-description: Set up PostgreSQL database with standardized schema.sql pattern
+description: Set up PostgreSQL database with standardized schema.sql pattern. Use when starting a new project that needs PostgreSQL, setting up database schema, or creating setup scripts for postgres.
 ---
 
 # PostgreSQL Database Setup Pattern

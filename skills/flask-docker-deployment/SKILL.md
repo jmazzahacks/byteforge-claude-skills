@@ -1,6 +1,6 @@
 ---
 name: flask-docker-deployment
-description: Set up Docker deployment for Flask applications with Gunicorn, automated versioning, and container registry publishing
+description: Set up Docker deployment for Flask applications with Gunicorn, automated versioning, and container registry publishing. Use when dockerizing a Flask app, containerizing for production, or setting up CI/CD with Docker.
 ---
 
 # Flask Docker Deployment Pattern
