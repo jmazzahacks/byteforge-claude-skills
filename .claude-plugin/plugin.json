@@ -15,7 +15,11 @@
     "pypi",
     "packaging",
     "setup",
-    "dev-tools"
+    "dev-tools",
+    "nextjs",
+    "aegis",
+    "authentication",
+    "frontend"
   ],
   "license": "MIT"
 }
