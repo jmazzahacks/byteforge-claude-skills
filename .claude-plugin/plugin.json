@@ -1,7 +1,7 @@
 {
   "name": "byteforge-claude-skills",
   "description": "Collection of Claude Code skills by @jmazzahacks that codify best practices and reusable patterns for software development",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Jason Byteforge",
     "github": "jmazzahacks"
