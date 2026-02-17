@@ -20,7 +20,8 @@
         "./skills/flask-smorest-api",
         "./skills/flask-docker-deployment",
         "./skills/mz-configure-loki-logging",
-        "./skills/aegis-nextjs-frontend"
+        "./skills/aegis-nextjs-frontend",
+        "./skills/mcp-docker-deployment"
       ]
     }
   ]
