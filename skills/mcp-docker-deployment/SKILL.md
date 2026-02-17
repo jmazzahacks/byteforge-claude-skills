@@ -1,22 +1,24 @@
 ---
 name: mcp-docker-deployment
-description: Set up Docker deployment for FastMCP (Python) servers with SSE/streamable-http transport, automated versioning, and container registry publishing. Use when dockerizing an MCP server, containerizing a FastMCP app for remote access, deploying an MCP server behind nginx, or setting up a production MCP server with Docker. Covers Dockerfile, build scripts, docker-compose, and nginx reverse proxy for SSE streaming.
+description: Set up Docker deployment for Python MCP servers (FastMCP or low-level mcp.server.Server SDK) with SSE/streamable-http transport, automated versioning, and container registry publishing. Use when dockerizing an MCP server, containerizing for remote access, deploying an MCP server behind nginx, or setting up a production MCP server with Docker. Covers Dockerfile, build scripts, docker-compose, and nginx reverse proxy for SSE streaming.
 ---
 
 # MCP Docker Deployment
 
-Containerize Python FastMCP servers for remote deployment with SSE or streamable-http transport, nginx reverse proxy with HTTPS, and GHCR publishing.
+Containerize Python MCP servers (FastMCP or low-level SDK) for remote deployment with SSE or streamable-http transport, nginx reverse proxy with HTTPS, and GHCR publishing.
 
 ## Step 1: Gather Project Information
 
 Ask the user:
 
 1. **"What is your MCP server entry point file?"** (e.g., `my_mcp_server.py`)
-2. **"What Python files/directories need to be copied into the container?"** (e.g., `tools/`, `models/`, `formatting.py`)
-3. **"What container registry URL?"** (e.g., `ghcr.io/{org}/{project}`)
-4. **"Does the MCP server need any environment variables?"** (list them for docker-compose and example.env)
-5. **"Will this be behind an nginx reverse proxy with HTTPS?"** (yes/no - if yes, include nginx config)
-6. **"Does it have private pip dependencies?"** (yes/no - if yes, needs CR_PAT build arg)
+2. **"Does your server use FastMCP (`mcp.server.fastmcp.FastMCP`) or the low-level SDK (`mcp.server.Server`)?"**
+3. **"Which transport? `sse` or `streamable-http`?"** (They are NOT interchangeable — different endpoints, different SDK classes)
+4. **"What Python files/directories need to be copied into the container?"** (e.g., `tools/`, `models/`, `formatting.py`)
+5. **"What container registry URL?"** (e.g., `ghcr.io/{org}/{project}`)
+6. **"Does the MCP server need any environment variables?"** (list them for docker-compose and example.env)
+7. **"Will this be behind an nginx reverse proxy with HTTPS?"** (yes/no - if yes, include nginx config)
+8. **"Does it have private pip dependencies?"** (yes/no - if yes, needs CR_PAT build arg)
 
 ## Step 2: Create Dockerfile
 
@@ -38,13 +40,19 @@ USER appuser
 
 EXPOSE 8000
 
-# SSE transport for Docker, bind to all interfaces
+# Transport for Docker, bind to all interfaces
 ENV MCP_TRANSPORT=sse
-ENV FASTMCP_HOST=0.0.0.0
-ENV FASTMCP_PORT=8000
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8000
 
 CMD ["python", "{entry_point}"]
 ```
+
+> **FastMCP note**: If the server uses FastMCP, also set `FASTMCP_HOST` and `FASTMCP_PORT` in the Dockerfile since FastMCP reads those specific env vars:
+> ```dockerfile
+> ENV FASTMCP_HOST=0.0.0.0
+> ENV FASTMCP_PORT=8000
+> ```
 
 If private pip dependencies, add before `pip install`:
 ```dockerfile
@@ -56,6 +64,8 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
 ```
 
 ## Step 3: Configure Transport in MCP Server
+
+### Path A: FastMCP (`mcp.server.fastmcp.FastMCP`)
 
 FastMCP's constructor defaults override env vars, so host/port **must** be passed explicitly:
 
@@ -82,6 +92,125 @@ Supported transports:
 - `stdio` - Local development (Claude Code local MCP servers)
 - `sse` - Server-Sent Events, works behind nginx reverse proxy
 - `streamable-http` - Newer HTTP transport
+
+### Path B: Low-level SDK (`mcp.server.Server`)
+
+The low-level SDK requires manual transport wiring with Starlette and uvicorn. Each transport type uses different SDK classes and different endpoints.
+
+#### Required imports
+
+```python
+import asyncio
+import contextlib
+import os
+from collections.abc import AsyncIterator
+from typing import Any
+
+import uvicorn
+from mcp.server import Server
+from mcp.server.sse import SseServerTransport
+from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from starlette.applications import Starlette
+from starlette.responses import Response
+from starlette.routing import Mount, Route
+```
+
+#### Server instance
+
+```python
+app = Server("my_mcp_server")
+
+# ... register tools with @app.list_tools(), @app.call_tool(), etc. ...
+```
+
+#### stdio transport (local development)
+
+```python
+async def main_stdio() -> None:
+    """Run the MCP server over stdio transport (local development)."""
+    async with stdio_server() as (read_stream, write_stream):
+        await app.run(
+            read_stream,
+            write_stream,
+            app.create_initialization_options()
+        )
+```
+
+#### SSE transport
+
+```python
+def main_sse() -> None:
+    """Run the MCP server over SSE transport (Docker/remote deployment)."""
+    host: str = os.environ.get("MCP_HOST", "0.0.0.0")
+    port: int = int(os.environ.get("MCP_PORT", "8000"))
+
+    sse_transport = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Any) -> Response:
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await app.run(
+                streams[0],
+                streams[1],
+                app.create_initialization_options(),
+            )
+        return Response()
+
+    starlette_app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ],
+    )
+
+    uvicorn.run(starlette_app, host=host, port=port)
+```
+
+#### streamable-http transport
+
+```python
+def main_streamable_http() -> None:
+    """Run the MCP server over streamable-http transport."""
+    host: str = os.environ.get("MCP_HOST", "0.0.0.0")
+    port: int = int(os.environ.get("MCP_PORT", "8000"))
+
+    session_manager = StreamableHTTPSessionManager(
+        app=app,
+        json_response=False,
+        stateless=True,
+    )
+
+    @contextlib.asynccontextmanager
+    async def lifespan(starlette_app: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            yield
+
+    starlette_app = Starlette(
+        routes=[
+            Mount("/mcp", app=session_manager.handle_request),
+        ],
+        lifespan=lifespan,
+    )
+
+    uvicorn.run(starlette_app, host=host, port=port)
+```
+
+#### Transport selection
+
+```python
+if __name__ == "__main__":
+    transport: str = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        asyncio.run(main_stdio())
+    elif transport == "sse":
+        main_sse()
+    elif transport == "streamable-http":
+        main_streamable_http()
+    else:
+        raise SystemExit(f"Unknown MCP_TRANSPORT: {transport} (expected: stdio, sse, streamable-http)")
+```
 
 ## Step 4: Create build-publish.sh
 
@@ -191,22 +320,29 @@ services:
       - "8000:8000"
     environment:
       MCP_TRANSPORT: sse
-      FASTMCP_HOST: 0.0.0.0
-      FASTMCP_PORT: 8000
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
       # Add all app-specific env vars from example.env
     # volumes:
     #   - /path/to/cert.pem:/app/ca.pem:ro
 ```
+
+> **FastMCP note**: If using FastMCP, also add `FASTMCP_HOST: 0.0.0.0` and `FASTMCP_PORT: 8000` to the environment section.
 
 Include **all** environment variables from the project's example.env.
 
 ## Step 7: Create example.env
 
 ```bash
-# MCP transport: "stdio" for local dev, "sse" for Docker/remote
+# MCP transport: "stdio" for local dev, "sse" or "streamable-http" for Docker/remote
 MCP_TRANSPORT=sse
 
-# FastMCP network settings (only used with SSE/streamable-http)
+# MCP network settings (used with SSE/streamable-http transport)
+# MCP_HOST=0.0.0.0
+# MCP_PORT=8000
+
+# FastMCP only: FastMCP reads these specific env vars for host/port binding.
+# Not needed for low-level SDK servers.
 # FASTMCP_HOST=0.0.0.0
 # FASTMCP_PORT=8000
 
@@ -252,8 +388,12 @@ Auth is handled at the nginx layer via Bearer token headers. The MCP server does
 
 ## Troubleshooting
 
-**Container binds to 127.0.0.1 instead of 0.0.0.0** - FastMCP constructor defaults override env vars. Pass host/port explicitly (see Step 3).
+**Container binds to 127.0.0.1 instead of 0.0.0.0 (FastMCP)** - FastMCP constructor defaults override env vars. Pass host/port explicitly in the FastMCP constructor (see Step 3, Path A).
 
 **SSE connection stale after container restart** - Claude Code caches SSE connections. Reload Claude Code to establish a fresh connection.
 
 **PyPI package version stale in Docker image** - Publish the new version to PyPI before running build-publish.sh. Verify with `docker exec {container} pip show {package}`.
+
+**Missing uvicorn or starlette (low-level SDK)** - Low-level SDK servers need `uvicorn` and `starlette` in `requirements.txt`. FastMCP bundles these, but the low-level SDK does not.
+
+**Wrong transport route (low-level SDK)** - SSE uses `/sse` and `/messages/`, streamable-http uses `/mcp`. These are NOT interchangeable. Make sure the client URL matches the transport configured on the server.
