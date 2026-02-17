@@ -223,6 +223,7 @@ If using **flask-smorest-api** skill, add logging **before** creating Flask app:
 
 ```python
 import os
+import logging
 from flask import Flask
 from mazza_base import configure_logging
 
@@ -232,8 +233,19 @@ configure_logging(application_tag='my-api', debug_local=debug_mode)
 
 # Then create Flask app
 app = Flask(__name__)
+
+# IMPORTANT: Propagate Flask's logger to the root logger so unhandled
+# exceptions in route handlers reach Loki. Without this, Flask catches
+# exceptions internally and logs them via werkzeug to stdout/stderr,
+# bypassing the root logger that configure_logging() set up.
+app.logger.handlers.clear()
+app.logger.propagate = True
+app.logger.setLevel(logging.DEBUG)
+
 # ... rest of setup
 ```
+
+**Why this matters**: Flask catches exceptions in route handlers and returns a 500 response, but by default it logs the traceback through its own `app.logger` using werkzeug's error handling — not through Python's root logger. Since `configure_logging()` configures the root logger, those tracebacks never reach Loki unless you clear Flask's default handlers and set `propagate = True`.
 
 ### Docker Deployment
 In your Dockerfile:
@@ -268,6 +280,11 @@ RUN pip install -r requirements.txt
 - Check all MZ_LOKI_* variables are correct
 - Test CA certificate path is accessible in container
 - Verify Loki endpoint is reachable from container
+
+**Flask route exceptions not appearing in Loki:**
+- Flask catches exceptions in route handlers and logs them via werkzeug to stdout/stderr, bypassing the root logger
+- Fix: clear Flask's default handlers and propagate to root logger (see Flask integration section above)
+- Symptoms: 500 errors appear in nginx/container logs but not in Grafana/Loki
 
 **Import error for mazza_base:**
 - Run `pip install -r requirements.txt` with CR_PAT set
