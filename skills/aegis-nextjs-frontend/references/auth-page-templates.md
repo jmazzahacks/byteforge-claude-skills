@@ -37,7 +37,7 @@ Split the project name at a natural boundary: the first word or prefix in `--for
 
 ## 1. app/[locale]/login/page.tsx
 
-Login form with email/password. Looks up the site via `getSiteDomain()` and `getAuthClient().getSiteByDomain()`. On success, stores `auth_token`, `refresh_token`, `token_expires_at`, `user_id`, `site_id`, `site_name` in localStorage and redirects to `/dashboard`. Includes forgot password link. Uses Suspense wrapper.
+Login form with email/password. Looks up the site via `getSiteDomain()` and `getAuthClient().getSiteByDomain()`. On success, calls `initAuthClientFromLogin()` to store tokens in localStorage and initialize the singleton AuthClient, then redirects to `/dashboard`. Includes forgot password link. Uses Suspense wrapper.
 
 Status states: `idle`, `loading`, `success`, `error`.
 
@@ -48,7 +48,7 @@ import { Suspense, useEffect, useState, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { Link } from '@/i18n/navigation';
-import { getAuthClient, getAuthClientForSite, getSiteDomain } from '@/lib/browserClient';
+import { getAuthClient, getAuthClientForSite, getSiteDomain, initAuthClientFromLogin } from '@/lib/browserClient';
 
 interface Site {
   id: number;
@@ -107,12 +107,7 @@ function LoginContent() {
     const result = await client.login(email, password);
 
     if (result.success && result.data) {
-      localStorage.setItem('auth_token', result.data.auth_token.token);
-      localStorage.setItem('refresh_token', result.data.refresh_token.token);
-      localStorage.setItem('token_expires_at', result.data.auth_token.expires_at.toString());
-      localStorage.setItem('user_id', result.data.auth_token.user_id.toString());
-      localStorage.setItem('site_id', site.id.toString());
-      localStorage.setItem('site_name', site.name);
+      initAuthClientFromLogin(result.data, site.id, site.name);
 
       setStatus('success');
       setMessage(t('accessGranted'));

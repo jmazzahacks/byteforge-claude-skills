@@ -20,7 +20,7 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 2. **Full auth flow** - Login, email verification, password reset, email change confirmation, welcome page
 3. **Protected dashboard** - Auth-gated page with redirect to login
 4. **Internationalization** - next-intl with English translations (extensible to any language)
-5. **Auth utilities** - `useAuth` hook, `browserClient` wrapper, `AuthCTA` component
+5. **Auth utilities** - Singleton `browserClient` with token refresh, `useAuth` hook with proactive refresh, `AuthCTA` component
 6. **Language switcher** - Scalable dropdown component in header
 7. **Design system** - CSS variables, light/dark mode, animations, card/button/input components
 8. **Docker deployment** - Multi-stage Dockerfile with standalone output
@@ -121,10 +121,10 @@ These files are identical across projects. No placeholder substitution needed.
 
 Generate files from `references/auth-templates.md`:
 
-- `lib/browserClient.ts` - Wraps `byteforge-aegis-client-js` with env-based configuration
-- `lib/useAuth.ts` - React hook reading auth state from localStorage (supports refresh tokens)
+- `lib/browserClient.ts` - Singleton AuthClient that persists tokens in memory and syncs to localStorage. Includes `initAuthClientFromLogin()`, `refreshAuthTokens()`, `isTokenExpired()`, and `clearAuthClient()` for centralized token management.
+- `lib/useAuth.ts` - React hook that reads auth state from localStorage, proactively refreshes tokens (5-minute buffer, 60-second check interval), and auto-logs out on refresh failure.
 
-These files are identical across projects except for the default env variable values.
+These files are identical across projects except for the default env variable values (`{aegis_api_url}`, `{site_domain}`).
 
 ## Step 6: Create Auth Pages
 
@@ -215,8 +215,12 @@ Verify all 10 pages generate (3 locales × pages if multiple languages, or just 
 ## Design Principles
 
 ### Authentication Pattern
+- **Singleton AuthClient** in `browserClient.ts` persists tokens in memory and syncs to localStorage
+- Login page calls `initAuthClientFromLogin()` instead of manual `localStorage.setItem()` calls
+- `useAuth` hook proactively refreshes tokens 5 minutes before expiry (checks every 60s)
+- Failed refresh (expired refresh token, network error) triggers automatic logout
+- `clearAuthClient()` is the single source of truth for clearing all auth state on logout
 - All auth state stored in localStorage (`auth_token`, `refresh_token`, `token_expires_at`, `user_id`, `site_id`, `site_name`)
-- `byteforge-aegis-client-js` v2.0 with auto-refresh enabled by default
 - Site lookup by domain on login page mount
 - Protected pages redirect to `/login` when not authenticated
 
