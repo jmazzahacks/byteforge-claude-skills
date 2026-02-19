@@ -247,6 +247,42 @@ app.logger.setLevel(logging.DEBUG)
 
 **Why this matters**: Flask catches exceptions in route handlers and returns a 500 response, but by default it logs the traceback through its own `app.logger` using werkzeug's error handling — not through Python's root logger. Since `configure_logging()` configures the root logger, those tracebacks never reach Loki unless you clear Flask's default handlers and set `propagate = True`.
 
+### Flask + Gunicorn: Propagate All Dependency Loggers
+
+When running Flask under gunicorn, werkzeug and gunicorn create their own loggers (`werkzeug`, `gunicorn.error`, `gunicorn.access`) with their own `StreamHandler` instances and set `propagate=False`. This means log messages from those loggers never reach the root logger — which is where `configure_logging()` attaches the Loki handler. All application logs go to stdout/stderr instead of Loki.
+
+**This must be done inside `create_app()`** — not at module level — because Flask and gunicorn set up their loggers during app initialization and would override anything done earlier.
+
+```python
+import logging
+from flask import Flask
+from mazza_base import configure_logging
+
+def create_app() -> Flask:
+    debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+    configure_logging(application_tag='my-api', debug_local=debug_mode)
+
+    app = Flask(__name__)
+
+    # Force Flask, werkzeug, and gunicorn loggers to propagate to root.
+    # These loggers create their own StreamHandlers with propagate=False,
+    # which bypasses the root logger's Loki handler.
+    app.logger.handlers.clear()
+    app.logger.propagate = True
+    app.logger.setLevel(logging.DEBUG)
+
+    for name in ('werkzeug', 'gunicorn', 'gunicorn.error', 'gunicorn.access'):
+        dep_logger = logging.getLogger(name)
+        dep_logger.handlers.clear()
+        dep_logger.propagate = True
+
+    # ... register blueprints, configure Api, etc.
+
+    return app
+```
+
+**CRITICAL**: The `for` loop clearing dependency loggers must run **after** Flask and Api are initialized (so their logger setup has already run), otherwise Flask/gunicorn will re-create their handlers and override your changes.
+
 ### Docker Deployment
 In your Dockerfile:
 
@@ -285,6 +321,11 @@ RUN pip install -r requirements.txt
 - Flask catches exceptions in route handlers and logs them via werkzeug to stdout/stderr, bypassing the root logger
 - Fix: clear Flask's default handlers and propagate to root logger (see Flask integration section above)
 - Symptoms: 500 errors appear in nginx/container logs but not in Grafana/Loki
+
+**Gunicorn/werkzeug logs going to stdout instead of Loki:**
+- Werkzeug and gunicorn create their own loggers with `propagate=False` and their own `StreamHandler` instances
+- Fix: clear handlers and set `propagate=True` on `werkzeug`, `gunicorn`, `gunicorn.error`, and `gunicorn.access` loggers inside `create_app()` (see Flask + Gunicorn section above)
+- Symptoms: application logs visible in `docker logs` or container stdout but missing from Grafana/Loki
 
 **Import error for mazza_base:**
 - Run `pip install -r requirements.txt` with CR_PAT set
