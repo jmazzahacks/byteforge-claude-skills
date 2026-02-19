@@ -41,6 +41,7 @@ CRITICAL: The `NEXT_PUBLIC_` prefix on environment variables is required by Next
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.17",
     "byteforge-aegis-client-js": "git+https://github.com/jmazzahacks/byteforge-aegis-client-js.git",
+    "byteforge-loki-logging-ts": "github:jmazzahacks/byteforge-loki-logging-ts",
     "next": "^16.0.1",
     "next-intl": "^4.6.1",
     "react": "^19.2.3",
@@ -70,14 +71,14 @@ import createNextIntlPlugin from 'next-intl/plugin';
 const withNextIntl = createNextIntlPlugin('./i18n/request.ts');
 
 const nextConfig: NextConfig = {
-  transpilePackages: ['byteforge-aegis-client-js'],
+  transpilePackages: ['byteforge-aegis-client-js', 'byteforge-loki-logging-ts'],
   output: 'standalone',
 };
 
 export default withNextIntl(nextConfig);
 ```
 
-CRITICAL: The `transpilePackages` entry for `byteforge-aegis-client-js` is required because the package is installed from a Git repository and must be transpiled by Next.js. Removing this will cause build failures.
+CRITICAL: The `transpilePackages` entries for `byteforge-aegis-client-js` and `byteforge-loki-logging-ts` are required because both packages are installed from GitHub repositories and must be transpiled by Next.js. Removing either will cause build failures.
 
 CRITICAL: The `output: 'standalone'` setting is required for Docker deployments. It produces a self-contained build that does not depend on `node_modules` at runtime.
 
@@ -182,6 +183,13 @@ NEXT_PUBLIC_AEGIS_API_URL={aegis_api_url}
 
 # Site domain for authentication (must match aegis site configuration)
 NEXT_PUBLIC_SITE_DOMAIN={site_domain}
+
+# Logging: set DEBUG_LOCAL=true for console output, omit or set to false for Loki
+DEBUG_LOCAL=true
+# LOKI_URL=https://loki.example.com
+# LOKI_USER=
+# LOKI_PASS=
+# LOKI_CA_PATH=
 ```
 
 CRITICAL: Copy this file to `.env.local` for local development. Never commit `.env.local` to version control.

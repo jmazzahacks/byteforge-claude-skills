@@ -65,6 +65,12 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV DEBUG_LOCAL=false
+# Loki logging vars — set via docker-compose or deployment config
+# ENV LOKI_URL=https://loki.example.com
+# ENV LOKI_USER=
+# ENV LOKI_PASS=
+# ENV LOKI_CA_PATH=
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
@@ -108,6 +114,12 @@ services:
     #     - NEXT_PUBLIC_SITE_DOMAIN={site_domain}
     ports:
       - "3000:3000"
+    environment:
+      - DEBUG_LOCAL=false
+      - LOKI_URL=${LOKI_URL}
+      - LOKI_USER=${LOKI_USER}
+      - LOKI_PASS=${LOKI_PASS}
+      # - LOKI_CA_PATH=/app/ca.pem
     restart: unless-stopped
 ```
 

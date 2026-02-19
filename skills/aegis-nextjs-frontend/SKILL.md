@@ -25,6 +25,7 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 7. **Design system** - CSS variables, light/dark mode, animations, card/button/input components
 8. **Docker deployment** - Multi-stage Dockerfile with standalone output
 9. **Health check endpoint** - `/api/health` for container orchestration
+10. **Loki logging** - Structured server-side logging with Grafana Loki (production) and console fallback (local dev)
 
 ## Step 1: Gather Project Information
 
@@ -72,6 +73,7 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 │   └── navigation.ts
 ├── lib/
 │   ├── browserClient.ts
+│   ├── logger.ts
 │   └── useAuth.ts
 ├── components/
 │   ├── AuthCTA.tsx
@@ -94,13 +96,13 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 
 Generate each configuration file using the templates in `references/config-templates.md`. These files are mostly boilerplate with placeholder substitutions:
 
-- `package.json` - Dependencies including `byteforge-aegis-client-js`, `next-intl`, Tailwind v4
-- `next.config.ts` - next-intl plugin, transpilePackages for aegis client, standalone output
+- `package.json` - Dependencies including `byteforge-aegis-client-js`, `byteforge-loki-logging-ts`, `next-intl`, Tailwind v4
+- `next.config.ts` - next-intl plugin, transpilePackages for aegis client and loki logging, standalone output
 - `tsconfig.json` - ES2017 target, strict mode, `@/*` path alias
 - `tailwind.config.ts` - Content paths for app/ and components/
 - `postcss.config.mjs` - `@tailwindcss/postcss` plugin
 - `global.d.ts` - IntlMessages type declaration
-- `.env.example` - `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN`
+- `.env.example` - `NEXT_PUBLIC_AEGIS_API_URL`, `NEXT_PUBLIC_SITE_DOMAIN`, and Loki logging variables
 
 **CRITICAL**: Replace all instances of `{project-name}`, `{ProjectName}`, `{site_domain}`, `{aegis_api_url}`, and `{project_description}` in every file.
 
@@ -187,7 +189,21 @@ Generate from `references/docker-templates.md`:
 - `docker-compose.example.yaml` - Service definition with image URL and port mapping
 - `app/api/health/route.ts` - Returns JSON with status, service name, and unix timestamp
 
-## Step 12: Initialize and Verify
+## Step 12: Configure Loki Logging
+
+Generate `lib/logger.ts` from `references/logging-templates.md`.
+
+This provides a dual-mode logger:
+- **Local dev** (`DEBUG_LOCAL=true`) — Formatted console output, no Loki connection needed
+- **Production** (`LOKI_URL` set) — Structured JSON logs shipped to Grafana Loki with batching
+
+After creating `lib/logger.ts`, import the `logger` singleton in all API route handlers (`app/api/**/route.ts`). Use `logger.info()` for success paths and `logger.error()` in catch blocks, always including the `route` field in extra for Loki filtering.
+
+**CRITICAL**: Replace `{project-name}` in the logger template (appears in emitter tags and the default singleton).
+
+**CRITICAL**: `byteforge-loki-logging-ts` is server-side only (uses `node:https`). Never import it in `'use client'` files or Edge Runtime routes.
+
+## Step 13: Initialize and Verify
 
 ```bash
 npm install
@@ -224,6 +240,9 @@ For custom build scripts, reference **flask-docker-deployment** pattern for `bui
 ### Database
 If the project needs a database, use **postgres-setup** skill.
 
+### Loki Logging (Flask backends)
+If the project also has a Flask backend on the same Loki infrastructure, use **mz-configure-loki-logging** skill for the Python side. Both skills push to the same Grafana Loki instance and can be queried together using the `app` label.
+
 ## Additional Resources
 
 ### Reference Files
@@ -237,4 +256,5 @@ All template code is organized in reference files for progressive loading:
 - **`references/component-templates.md`** - AuthCTA, LanguageSwitcher, layouts
 - **`references/page-templates.md`** - Dashboard, home page
 - **`references/design-system.md`** - globals.css with full design system
+- **`references/logging-templates.md`** - lib/logger.ts with Loki and console dual-mode logging
 - **`references/docker-templates.md`** - Dockerfile, docker-compose, health endpoint
