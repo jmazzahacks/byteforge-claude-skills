@@ -26,6 +26,7 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 8. **Docker deployment** - Multi-stage Dockerfile with standalone output
 9. **Health check endpoint** - `/api/health` for container orchestration
 10. **Loki logging** - Structured server-side logging with Grafana Loki (production) and console fallback (local dev)
+11. **Webhook provisioning docs** - Aegis user.verified webhook contract and reference implementation for tenant-side user provisioning
 
 ## Step 1: Gather Project Information
 
@@ -48,6 +49,9 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 
 5. **"What is a one-line description of the project?"** (e.g., "AI-powered release notes platform")
    - Used in metadata, home page subtitle, health check
+
+6. **"Does your backend need to provision users when they verify on Aegis? If yes, what backend handles it?"** (e.g., "Yes, Flask backend" / "Yes, Next.js API routes" / "No")
+   - Determines whether to include webhook setup instructions in Step 13
 
 ## Step 2: Create Directory Structure
 
@@ -203,7 +207,24 @@ After creating `lib/logger.ts`, import the `logger` singleton in all API route h
 
 **CRITICAL**: `byteforge-loki-logging-ts` is server-side only (uses `node:https`). Never import it in `'use client'` files or Edge Runtime routes.
 
-## Step 13: Initialize and Verify
+## Step 13: Configure Aegis Webhook (Optional)
+
+If the user indicated their backend needs to provision users on verification (Step 1, question 6), guide them through webhook setup using `references/webhook-templates.md`.
+
+This step is **backend-agnostic** — the webhook handler can live in a Next.js API route, Flask endpoint, Express server, or any other backend that can receive HTTP POST requests.
+
+Key actions:
+1. Explain the webhook contract (payload shape, headers, signing algorithm)
+2. Add `AEGIS_WEBHOOK_SECRET` to the project's `.env.example`
+3. Provide the appropriate reference implementation:
+   - **Next.js**: Use the API route skeleton from the templates
+   - **Flask**: Reference the NoteForge implementation pattern
+   - **Other**: Walk through the signature verification algorithm and provisioning pattern
+4. Remind the user to configure `webhook_url` on their Aegis site via the admin API
+
+If the user does **not** need webhook provisioning, skip this step entirely.
+
+## Step 14: Initialize and Verify
 
 ```bash
 npm install
@@ -230,9 +251,17 @@ Verify all 10 pages generate (3 locales × pages if multiple languages, or just 
 - All user-facing text goes through translation keys, never hardcoded
 - Language switcher preserves current pathname when switching
 
+### Webhook Provisioning
+- **Flow**: User signs up on Aegis → verifies email → Aegis fires `user.verified` webhook → tenant backend provisions user (creates DB record, generates API key, etc.)
+- **Signing**: HMAC-SHA256 over `"{timestamp}.{body}"` with shared secret — tenant verifies before processing
+- **Idempotent 3-branch pattern**: (1) Aegis ID already exists → no-op, (2) email exists but no Aegis ID → link it, (3) new user → create record
+- **Backend-agnostic**: The webhook handler can be any HTTP endpoint — Next.js API route, Flask blueprint, Express middleware, etc.
+- **Optional**: Not all projects need webhook provisioning. Only include when the tenant site has its own user records to create.
+
 ### Security
 - Forgot password always shows success (never reveals if email exists)
 - Tokens stored in localStorage with explicit cleanup on logout
+- Webhook signatures verified with constant-time comparison and replay protection (300s tolerance)
 - Non-root user in Docker container
 - Health check endpoint for orchestration
 
@@ -262,3 +291,4 @@ All template code is organized in reference files for progressive loading:
 - **`references/design-system.md`** - globals.css with full design system
 - **`references/logging-templates.md`** - lib/logger.ts with Loki and console dual-mode logging
 - **`references/docker-templates.md`** - Dockerfile, docker-compose, health endpoint
+- **`references/webhook-templates.md`** - Aegis user.verified webhook contract, signature verification, and provisioning pattern
