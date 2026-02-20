@@ -88,7 +88,7 @@ function createLokiLogger(name: string): Logger {
     {
       transport: transportConfig,
       emitter: {
-        tags: { app: '{project-name}', env: 'production' },
+        tags: { application: '{project-name}', env: 'production' },
         asJson: true,
       },
       batch: {
@@ -113,7 +113,9 @@ const mode = useLoki ? `loki (${LOKI_URL})` : 'console (DEBUG_LOCAL)';
 logger.info(`Logger initialized in ${mode} mode`);
 ```
 
-CRITICAL: Replace `{project-name}` in two places: the `emitter.tags.app` value inside `createLokiLogger`, and the `createLogger` call for the default singleton.
+CRITICAL: Replace `{project-name}` in two places: the `emitter.tags.application` value inside `createLokiLogger`, and the `createLogger` call for the default singleton.
+
+CRITICAL: The Loki label **must** be `application`, not `app`. All services across the stack (Python and TypeScript) use `application` as the standard label for filtering in Grafana. Using `app` will create inconsistent labels that fragment your Loki queries.
 
 ---
 

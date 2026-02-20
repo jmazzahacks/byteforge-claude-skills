@@ -29,6 +29,7 @@ Use this skill when:
 
 1. **"What is your application tag/name?"** (e.g., "materia-server", "trading-api")
    - This identifies your service in Loki logs
+   - This becomes the `application` label in Loki — all services across the stack (Python and TypeScript) **must** use `application` as the label name, never `app` or `service`
 
 2. **"What is your main application file?"** (e.g., "app.py", "server.py", "materia_server.py")
    - Where to add the logging configuration
