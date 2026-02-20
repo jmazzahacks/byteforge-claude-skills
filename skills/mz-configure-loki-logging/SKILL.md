@@ -251,16 +251,28 @@ app.logger.setLevel(logging.DEBUG)
 
 When running Flask under gunicorn, werkzeug and gunicorn create their own loggers (`werkzeug`, `gunicorn.error`, `gunicorn.access`) with their own `StreamHandler` instances and set `propagate=False`. This means log messages from those loggers never reach the root logger — which is where `configure_logging()` attaches the Loki handler. All application logs go to stdout/stderr instead of Loki.
 
-**This must be done inside `create_app()`** — not at module level — because Flask and gunicorn set up their loggers during app initialization and would override anything done earlier.
+**Everything must be done inside `create_app()`** — not at module level — for two reasons:
+
+1. **Logger override**: Flask and gunicorn set up their loggers during app initialization and would override anything done earlier.
+2. **Gunicorn fork/SSL**: `configure_logging()` creates a Loki handler with a `requests.Session` and SSL context. If called at module level, this runs in gunicorn's **master process** before `fork()`. The SSL context doesn't survive the fork into worker processes, causing SSL errors on the first log messages until the session reconnects. Moving it into `create_app()` ensures the SSL context is created in the worker process where it will be used.
 
 ```python
+import os
 import logging
 from flask import Flask
 from mazza_base import configure_logging
 
 def create_app() -> Flask:
+    # Configure logging inside create_app() so it runs post-fork in the
+    # gunicorn worker process. Module-level init causes SSL context issues
+    # with the Loki handler because the SSL session doesn't survive fork().
     debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
-    configure_logging(application_tag='my-api', debug_local=debug_mode)
+    log_level = os.environ.get('LOG_LEVEL', 'INFO')
+    configure_logging(
+        application_tag='my-api',
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
 
     app = Flask(__name__)
 
@@ -279,7 +291,12 @@ def create_app() -> Flask:
     # ... register blueprints, configure Api, etc.
 
     return app
+
+# create_app() runs when gunicorn imports the module in the WORKER process
+app = create_app()
 ```
+
+**CRITICAL**: `configure_logging()` must be the first thing inside `create_app()`, before any code that logs. Do NOT call it at module level.
 
 **CRITICAL**: The `for` loop clearing dependency loggers must run **after** Flask and Api are initialized (so their logger setup has already run), otherwise Flask/gunicorn will re-create their handlers and override your changes.
 
@@ -322,6 +339,11 @@ RUN pip install -r requirements.txt
 - Fix: clear Flask's default handlers and propagate to root logger (see Flask integration section above)
 - Symptoms: 500 errors appear in nginx/container logs but not in Grafana/Loki
 
+**Loki SSL errors on first few startup log messages (gunicorn):**
+- `configure_logging()` was called at module level, which runs in gunicorn's master process before `fork()`. The Loki handler's `requests.Session` and its SSL context were initialized pre-fork, then broke in the child worker because SSL contexts don't survive `fork()`.
+- Fix: move `configure_logging()` inside `create_app()` so it runs post-fork in the worker process (see Flask + Gunicorn section above)
+- Symptoms: SSL errors only on the first few startup log messages, then everything works fine after the session recovers
+
 **Gunicorn/werkzeug logs going to stdout instead of Loki:**
 - Werkzeug and gunicorn create their own loggers with `propagate=False` and their own `StreamHandler` instances
 - Fix: clear handlers and set `propagate=True` on `werkzeug`, `gunicorn`, `gunicorn.error`, and `gunicorn.access` loggers inside `create_app()` (see Flask + Gunicorn section above)
@@ -338,17 +360,37 @@ See the materia-server project for a reference implementation:
 ```python
 # materia_server.py
 import os
+import logging
+from flask import Flask
 from mazza_base import configure_logging
 
-debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
-log_level = os.environ.get('LOG_LEVEL', 'INFO')
-configure_logging(
-    application_tag='materia-server',
-    debug_local=debug_mode,
-    local_level=log_level
-)
 
-# ... rest of Flask app setup
+def create_app() -> Flask:
+    debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+    log_level = os.environ.get('LOG_LEVEL', 'INFO')
+    configure_logging(
+        application_tag='materia-server',
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
+
+    app = Flask(__name__)
+
+    app.logger.handlers.clear()
+    app.logger.propagate = True
+    app.logger.setLevel(logging.DEBUG)
+
+    for name in ('werkzeug', 'gunicorn', 'gunicorn.error', 'gunicorn.access'):
+        dep_logger = logging.getLogger(name)
+        dep_logger.handlers.clear()
+        dep_logger.propagate = True
+
+    # ... register blueprints, configure Api, etc.
+
+    return app
+
+
+app = create_app()
 ```
 
 ```dockerfile
