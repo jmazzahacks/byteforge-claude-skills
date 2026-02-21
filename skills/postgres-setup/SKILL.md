@@ -12,7 +12,6 @@ This skill helps you set up a PostgreSQL database following a standardized patte
 Use this skill when:
 - Starting a new project that needs PostgreSQL
 - You want a clean separation between schema definition (SQL) and setup logic (Python)
-- You need support for both production and test databases
 - You want consistent environment variable patterns
 
 ## What This Skill Creates
@@ -91,7 +90,6 @@ Creates the {project_name} database and user with proper permissions, then appli
 Usage:
   python setup_database.py --pg-password <postgres_password>
   python setup_database.py --pg-password <postgres_password> --pg-user <superuser>
-  python setup_database.py --pg-password <postgres_password> --test-db
 """
 
 import os
@@ -108,8 +106,6 @@ def main():
                        help='PostgreSQL superuser password (required)')
     parser.add_argument('--pg-user', default='postgres',
                        help='PostgreSQL superuser name (default: postgres)')
-    parser.add_argument('--test-db', action='store_true',
-                       help='Create {project_name}_test database instead of main {project_name} database')
     args = parser.parse_args()
 
     pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
@@ -117,11 +113,7 @@ def main():
     pg_user = args.pg_user
     pg_password = args.pg_password
 
-    if args.test_db:
-        {project_name}_db = '{project_name}_test'
-        print("Setting up TEST database '{project_name}_test'...")
-    else:
-        {project_name}_db = os.environ.get('{PROJECT_NAME}_PG_DB', '{project_name}')
+    {project_name}_db = os.environ.get('{PROJECT_NAME}_PG_DB', '{project_name}')
     {project_name}_user = os.environ.get('{PROJECT_NAME}_PG_USER', '{project_name}')
     {project_name}_password = os.environ.get('{PROJECT_NAME}_PG_PASSWORD', None)
 
@@ -224,7 +216,6 @@ Add a section to the project's README.md (or create SETUP.md) documenting:
 
 **Optional:**
 - `--pg-user` - PostgreSQL superuser name (default: postgres)
-- `--test-db` - Create test database instead of main database
 
 ### Environment Variables
 
@@ -248,9 +239,6 @@ python dev_scripts/setup_database.py --pg-password "your_postgres_password"
 
 # With custom superuser name
 python dev_scripts/setup_database.py --pg-password "your_postgres_password" --pg-user "admin"
-
-# For test database
-python dev_scripts/setup_database.py --pg-password "your_postgres_password" --test-db
 ```
 
 ## Step 6: Make Script Executable
@@ -366,8 +354,7 @@ This pattern follows these principles:
 ### Database Schema:
 1. **Separation of concerns** - SQL in .sql files, setup logic in Python
 2. **Idempotency** - Safe to run multiple times
-3. **Test database support** - Easy to create isolated test environments
-4. **Unix timestamps** - Always use BIGINT for dates/times (not TIMESTAMP types)
+3. **Unix timestamps** - Always use BIGINT for dates/times (not TIMESTAMP types)
 5. **UUIDs for keys** - Better for distributed systems
 6. **Environment-based config** - No hardcoded credentials
 
