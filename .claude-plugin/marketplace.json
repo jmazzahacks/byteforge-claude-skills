@@ -6,12 +6,12 @@
   },
   "metadata": {
     "description": "Byteforge development skills collection",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "plugins": [
     {
       "name": "byteforge-skills",
-      "description": "Collection of development setup skills including PostgreSQL database setup, Python PyPI package publishing, Flask REST API with OpenAPI docs and dataclass models, Flask Docker deployment, Mazza-specific Grafana Loki logging configuration, and Next.js frontend scaffolding with ByteForge Aegis authentication",
+      "description": "Collection of development setup skills including PostgreSQL database setup, Python PyPI package publishing, Flask REST API with OpenAPI docs and dataclass models, Flask Docker deployment, Grafana Loki logging configuration, and Next.js frontend scaffolding with ByteForge Aegis authentication",
       "source": "./",
       "strict": true,
       "skills": [
@@ -19,7 +19,7 @@
         "./skills/python-pypi-setup",
         "./skills/flask-smorest-api",
         "./skills/flask-docker-deployment",
-        "./skills/mz-configure-loki-logging",
+        "./skills/byteforge-loki-logging",
         "./skills/aegis-nextjs-frontend",
         "./skills/mcp-docker-deployment"
       ]

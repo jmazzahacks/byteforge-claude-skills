@@ -248,8 +248,8 @@ byteforge-claude-skills/
 │   │   └── SKILL.md
 │   ├── flask-docker-deployment/
 │   │   └── SKILL.md
-│   └── mz-configure-loki-logging/  # Mazza-specific (not documented here)
-│       └── SKILL.md
+│   ├── byteforge-loki-logging/
+│   │   └── SKILL.md
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```

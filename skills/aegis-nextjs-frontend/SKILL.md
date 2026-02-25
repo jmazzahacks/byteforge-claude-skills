@@ -274,7 +274,7 @@ For custom build scripts, reference **flask-docker-deployment** pattern for `bui
 If the project needs a database, use **postgres-setup** skill.
 
 ### Loki Logging (Flask backends)
-If the project also has a Flask backend on the same Loki infrastructure, use **mz-configure-loki-logging** skill for the Python side. Both skills push to the same Grafana Loki instance and can be queried together using the `app` label.
+If the project also has a Flask backend on the same Loki infrastructure, use **byteforge-loki-logging** skill for the Python side. Both skills push to the same Grafana Loki instance and can be queried together using the `application` label.
 
 ## Additional Resources
 

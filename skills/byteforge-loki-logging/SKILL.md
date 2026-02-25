@@ -1,27 +1,26 @@
 ---
-name: mz-configure-loki-logging
-description: Configure Grafana Loki logging using mazza-base library for Python/Flask applications with CA certificate (Mazza-specific). Use when setting up Loki logging for Mazza projects or configuring centralized logging.
+name: byteforge-loki-logging
+description: Configure Grafana Loki logging using byteforge-loki-logging library for Python/Flask applications. Use when setting up Loki logging, configuring centralized logging, or adding structured JSON logging to any Python project.
 ---
 
-# Loki Logging with mazza-base
+# Loki Logging with byteforge-loki-logging
 
-This skill helps you integrate Grafana Loki logging using the mazza-base utility library, which handles structured JSON logging and Loki shipping.
+This skill helps you integrate Grafana Loki logging using the `byteforge-loki-logging` library, which handles structured JSON logging and asynchronous Loki shipping with graceful fallback.
 
 ## When to Use This Skill
 
 Use this skill when:
 - Starting a new Python/Flask application
 - You want centralized logging with Loki
-- You need structured logs for production
+- You need structured JSON logs for production
 - You want easy local development with console logs
 
 ## What This Skill Creates
 
-1. **requirements.txt entry** - Adds mazza-base dependency
-2. **CA certificate file** - Places mazza.vc_CA.pem in project root
-3. **Dockerfile updates** - Copies CA certificate to container
-4. **Logging initialization** - Adds configure_logging() call to main application file
-5. **Environment variable documentation** - All required Loki configuration
+1. **requirements.txt entry** - Adds `byteforge-loki-logging` dependency (public PyPI package)
+2. **Logging initialization** - Adds `configure_logging()` call to main application file
+3. **CA certificate configuration** - Docker Compose volume mount for your Loki CA certificate
+4. **Environment variable documentation** - All required Loki configuration
 
 ## Step 1: Gather Project Information
 
@@ -34,77 +33,35 @@ Use this skill when:
 2. **"What is your main application file?"** (e.g., "app.py", "server.py", "materia_server.py")
    - Where to add the logging configuration
 
-3. **"Do you have the mazza.vc_CA.pem certificate file?"**
-   - Required for secure Loki connection
-   - If no, user needs to obtain it from Mazza infrastructure team
+3. **"What is your CA certificate filename?"** (e.g., "loki-ca.pem", "my-org-ca.pem")
+   - Required for secure Loki connection over TLS
+   - If the user does not have one or their Loki endpoint does not use a private CA, this step can be skipped
 
-4. **"Do you have a CR_PAT environment variable set?"** (GitHub Personal Access Token)
-   - Required to install mazza-base from private GitHub repo
-
-## Step 2: Add mazza-base to requirements.txt
+## Step 2: Add byteforge-loki-logging to requirements.txt
 
 Add this line to `requirements.txt`:
 
 ```txt
 # Logging configuration with Loki support
-mazza-base @ git+https://${CR_PAT}@github.com/mazza-vc/python-mazza-base.git@main
+byteforge-loki-logging
 ```
 
-**NOTE**: The `CR_PAT` environment variable must be set when running `pip install`:
+Install the dependency:
 ```bash
-export CR_PAT="your_github_personal_access_token"
 pip install -r requirements.txt
 ```
 
-## Step 3: Add CA Certificate File
+No private tokens or build args needed — `byteforge-loki-logging` is a public PyPI package.
 
-Ensure `mazza.vc_CA.pem` file is in your project root:
-
-```
-{project_root}/
-├── mazza.vc_CA.pem    # CA certificate for secure Loki connection
-├── requirements.txt
-├── Dockerfile
-└── {app_file}.py
-```
-
-If you don't have this file, contact the Mazza infrastructure team.
-
-## Step 4: Update Dockerfile
-
-Add the CA certificate to your Dockerfile. Place this **before** installing requirements:
-
-```dockerfile
-FROM python:3.11-alpine
-
-ARG CR_PAT
-ENV CR_PAT=${CR_PAT}
-
-WORKDIR /app
-
-# Copy CA certificate
-COPY mazza.vc_CA.pem .
-
-# Copy requirements and install
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-# ... rest of Dockerfile
-```
-
-**CRITICAL**: The COPY line must appear before `pip install -r requirements.txt`
-
-The certificate will be available at `/app/mazza.vc_CA.pem` in the container.
-
-## Step 5: Configure Logging in Application
+## Step 3: Configure Logging in Application
 
 Add to the **top** of your main application file (e.g., `{app_file}.py`):
 
 ```python
 import os
-from mazza_base import configure_logging
+from byteforge_loki_logging import configure_logging
 
-# Configure logging with mazza_base
+# Configure logging with byteforge-loki-logging
 # Use debug_local=True for local development, False for production with Loki
 debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
@@ -116,12 +73,49 @@ configure_logging(
 ```
 
 **CRITICAL**: Replace:
-- `{app_file}` → Your main application filename (e.g., "materia_server")
-- `{application_tag}` → Your service name (e.g., "materia-server")
+- `{app_file}` -> Your main application filename (e.g., "materia_server")
+- `{application_tag}` -> Your service name (e.g., "materia-server")
 
 Place this **before** creating your Flask app or any other initialization.
 
-## Step 6: Document Environment Variables
+### Structured JSON Logging
+
+JSON formatting is enabled by default (`json_format=True`). Log records are formatted as:
+
+```json
+{"logger": "myapp", "level": "INFO", "message": "Request processed", "user_id": "123", "latency_ms": 42}
+```
+
+Query in Grafana: `{application="my-service"} | json | user_id="123"`
+
+### Graceful Fallback
+
+If the Loki connection test fails at startup, logging automatically falls back to stdout with a warning on stderr. Your application never crashes due to logging issues.
+
+## Step 4: Configure CA Certificate
+
+If your Loki endpoint uses a private CA certificate, mount it into the container via Docker Compose as a read-only volume. **Do not** bake the certificate into the Dockerfile with `COPY`.
+
+In `docker-compose.yaml`:
+
+```yaml
+services:
+  {app_name}:
+    volumes:
+      - /path/to/{ca_cert_filename}:/app/certs/loki-ca.pem:ro
+    environment:
+      - LOKI_CA_BUNDLE_PATH=/app/certs/loki-ca.pem
+```
+
+**CRITICAL**: Replace:
+- `{app_name}` -> Your service name in docker-compose
+- `{ca_cert_filename}` -> Your actual CA certificate filename from Step 1
+
+The certificate will be available at `/app/certs/loki-ca.pem` inside the container.
+
+If your Loki endpoint does not use a private CA (e.g., uses a publicly trusted certificate), skip this step and omit `LOKI_CA_BUNDLE_PATH`.
+
+## Step 5: Document Environment Variables
 
 Add to README.md or .env.example:
 
@@ -135,30 +129,26 @@ Add to README.md or .env.example:
   - Default: 'INFO'
 
 **Loki Configuration (Production Only - required when DEBUG_LOCAL=false):**
-- `MZ_LOKI_ENDPOINT` - Loki server URL (e.g., https://loki.mazza.vc:8443/loki/api/v1/push)
-- `MZ_LOKI_USER` - Loki username for authentication
-- `MZ_LOKI_PASSWORD` - Loki password for authentication
-- `MZ_LOKI_CA_BUNDLE_PATH` - Path to CA certificate (e.g., /app/mazza.vc_CA.pem)
-
-**GitHub Access (for pip install):**
-- `CR_PAT` - GitHub Personal Access Token with repo access
-  - Required to install mazza-base from private repository
+- `LOKI_ENDPOINT` - Loki push API URL (e.g., https://loki.example.com/loki/api/v1/push)
+- `LOKI_USER` - Loki username for HTTP Basic Auth
+- `LOKI_PASSWORD` - Loki password for HTTP Basic Auth
+- `LOKI_CA_BUNDLE_PATH` - Path to CA certificate (e.g., /app/certs/loki-ca.pem), or "false" to disable SSL verification
 
 ### Logging Behavior
 
 **Local Development** (`DEBUG_LOCAL=true`):
-- Logs output to console with pretty formatting
+- Logs output to console with human-readable formatting
 - Easy to read during development
 - No Loki connection required
-- No need to set MZ_LOKI_* variables
+- No need to set LOKI_* variables
 
 **Production** (`DEBUG_LOCAL=false`):
-- Logs output as structured JSON to Loki
-- All MZ_LOKI_* variables must be set
+- Logs output as structured JSON to Loki asynchronously (1-second batching)
+- All LOKI_* variables must be set
 - Queryable in Grafana
-- Secure connection via mazza.vc_CA.pem
+- Automatic fallback to stdout if Loki is unreachable at startup
 
-## Step 7: Usage Examples
+## Step 6: Usage Examples
 
 ### Local Development
 
@@ -166,7 +156,6 @@ Add to README.md or .env.example:
 # In .env or shell
 export DEBUG_LOCAL=true
 export LOG_LEVEL=DEBUG
-export CR_PAT=your_github_token
 
 pip install -r requirements.txt
 python {app_file}.py
@@ -181,39 +170,41 @@ services:
   {app_name}:
     build:
       context: .
-      args:
-        - CR_PAT=${CR_PAT}
+    volumes:
+      - /path/to/{ca_cert_filename}:/app/certs/loki-ca.pem:ro
     environment:
       - DEBUG_LOCAL=false
       - LOG_LEVEL=INFO
-      - MZ_LOKI_ENDPOINT=${MZ_LOKI_ENDPOINT}
-      - MZ_LOKI_USER=${MZ_LOKI_USER}
-      - MZ_LOKI_PASSWORD=${MZ_LOKI_PASSWORD}
-      - MZ_LOKI_CA_BUNDLE_PATH=/app/mazza.vc_CA.pem
+      - LOKI_ENDPOINT=${LOKI_ENDPOINT}
+      - LOKI_USER=${LOKI_USER}
+      - LOKI_PASSWORD=${LOKI_PASSWORD}
+      - LOKI_CA_BUNDLE_PATH=/app/certs/loki-ca.pem
 ```
 
 **NOTE**: Set these in your .env file:
 ```
-MZ_LOKI_ENDPOINT=https://loki.mazza.vc:8443/loki/api/v1/push
-MZ_LOKI_USER=your_loki_user
-MZ_LOKI_PASSWORD=your_loki_password
+LOKI_ENDPOINT=https://loki.example.com/loki/api/v1/push
+LOKI_USER=your_loki_user
+LOKI_PASSWORD=your_loki_password
 ```
 
 ## How It Works
 
-The `mazza-base` library provides:
+The `byteforge-loki-logging` library provides:
 
 1. **Automatic mode detection** - Console logs for local dev, Loki for production
-2. **Structured logging** - Consistent JSON format for Loki
-3. **Secure connection** - Uses CA certificate for encrypted Loki communication
-4. **Easy integration** - One function call to configure everything
-5. **Application tagging** - Identifies your service in centralized logs
+2. **Structured JSON logging** - Consistent JSON format for Loki, enabled by default
+3. **Async shipping** - Background thread with 1-second batching for minimal performance impact
+4. **Secure connection** - Uses CA certificate for encrypted Loki communication
+5. **Graceful fallback** - Falls back to stdout if Loki is unreachable, never crashes your app
+6. **Application tagging** - Identifies your service in centralized logs via the `application` label
 
 **You don't need to:**
 - Write JSON formatters
 - Configure logging handlers
 - Manage Loki client setup
 - Handle certificate validation
+- Worry about logging crashing your application
 
 **Just call `configure_logging()` and you're done!**
 
@@ -226,7 +217,7 @@ If using **flask-smorest-api** skill, add logging **before** creating Flask app:
 import os
 import logging
 from flask import Flask
-from mazza_base import configure_logging
+from byteforge_loki_logging import configure_logging
 
 # Configure logging FIRST
 debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
@@ -261,7 +252,7 @@ When running Flask under gunicorn, werkzeug and gunicorn create their own logger
 import os
 import logging
 from flask import Flask
-from mazza_base import configure_logging
+from byteforge_loki_logging import configure_logging
 
 def create_app() -> Flask:
     # Configure logging inside create_app() so it runs post-fork in the
@@ -301,39 +292,24 @@ app = create_app()
 
 **CRITICAL**: The `for` loop clearing dependency loggers must run **after** Flask and Api are initialized (so their logger setup has already run), otherwise Flask/gunicorn will re-create their handlers and override your changes.
 
-### Docker Deployment
-In your Dockerfile:
-
-```dockerfile
-ARG CR_PAT
-ENV CR_PAT=${CR_PAT}
-COPY mazza.vc_CA.pem .
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-```
-
 ## Troubleshooting
-
-**Cannot install mazza-base:**
-- Ensure `CR_PAT` environment variable is set
-- Verify token has repo access to `mazza-vc/python-mazza-base`
-- Check token is not expired
-
-**Missing CA certificate error:**
-- Ensure `mazza.vc_CA.pem` is in project root
-- Verify file is copied in Dockerfile: `COPY mazza.vc_CA.pem .`
-- Check MZ_LOKI_CA_BUNDLE_PATH points to correct location
-
-**Runtime error: Missing required environment variables:**
-- Only occurs when `DEBUG_LOCAL=false`
-- Ensure all MZ_LOKI_* variables are set
-- Check spelling (MZ_LOKI_, not LOKI_ or MATERIA_LOKI_)
 
 **Logs not appearing in Loki (production):**
 - Verify `DEBUG_LOCAL=false` is set
-- Check all MZ_LOKI_* variables are correct
+- Check all LOKI_* variables are correct
 - Test CA certificate path is accessible in container
 - Verify Loki endpoint is reachable from container
+- Check stderr for fallback warnings — if you see "Falling back to stdout", the Loki connection failed at startup
+
+**Missing CA certificate error:**
+- Ensure the volume mount is correct in docker-compose.yaml
+- Verify `LOKI_CA_BUNDLE_PATH` points to `/app/certs/loki-ca.pem`
+- Check that the source file exists on the host at the mounted path
+
+**Runtime error: Missing required environment variables:**
+- Only occurs when `DEBUG_LOCAL=false`
+- Ensure all LOKI_* variables are set
+- Check spelling (LOKI_, not MZ_LOKI_ or MATERIA_LOKI_)
 
 **Flask route exceptions not appearing in Loki:**
 - Flask catches exceptions in route handlers and logs them via werkzeug to stdout/stderr, bypassing the root logger
@@ -350,20 +326,18 @@ RUN pip install -r requirements.txt
 - Fix: clear handlers and set `propagate=True` on `werkzeug`, `gunicorn`, `gunicorn.error`, and `gunicorn.access` loggers inside `create_app()` (see Flask + Gunicorn section above)
 - Symptoms: application logs visible in `docker logs` or container stdout but missing from Grafana/Loki
 
-**Import error for mazza_base:**
-- Run `pip install -r requirements.txt` with CR_PAT set
-- Verify mazza-base installed: `pip list | grep mazza-base`
+**Import error for byteforge_loki_logging:**
+- Run `pip install -r requirements.txt`
+- Verify installed: `pip list | grep byteforge-loki-logging`
 
 ## Example Implementation
-
-See the materia-server project for a reference implementation:
 
 ```python
 # materia_server.py
 import os
 import logging
 from flask import Flask
-from mazza_base import configure_logging
+from byteforge_loki_logging import configure_logging
 
 
 def create_app() -> Flask:
@@ -394,27 +368,19 @@ def create_app() -> Flask:
 app = create_app()
 ```
 
-```dockerfile
-# Dockerfile
-FROM python:3.11-alpine
-ARG CR_PAT
-ENV CR_PAT=${CR_PAT}
-WORKDIR /app
-COPY mazza.vc_CA.pem .
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-# ... rest of Dockerfile
-```
-
 ```yaml
 # docker-compose.yaml
 services:
   materia-server:
+    volumes:
+      - ./certs/loki-ca.pem:/app/certs/loki-ca.pem:ro
     environment:
-      - MZ_LOKI_USER=${MZ_LOKI_USER}
-      - MZ_LOKI_ENDPOINT=${MZ_LOKI_ENDPOINT}
-      - MZ_LOKI_PASSWORD=${MZ_LOKI_PASSWORD}
-      - MZ_LOKI_CA_BUNDLE_PATH=/app/mazza.vc_CA.pem
+      - DEBUG_LOCAL=false
+      - LOG_LEVEL=INFO
+      - LOKI_ENDPOINT=${LOKI_ENDPOINT}
+      - LOKI_USER=${LOKI_USER}
+      - LOKI_PASSWORD=${LOKI_PASSWORD}
+      - LOKI_CA_BUNDLE_PATH=/app/certs/loki-ca.pem
 ```
 
 This provides structured logging locally during development and automatic Loki shipping in production with secure encrypted connections.
