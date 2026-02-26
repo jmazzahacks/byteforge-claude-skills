@@ -17,8 +17,14 @@ Use this skill when:
 ## What This Skill Creates
 
 1. **`database/schema.sql`** - SQL schema with table definitions
-2. **`dev_scripts/setup_database.py`** - Python setup script
+2. **`dev_scripts/setup_database.py`** - Python setup script (uses `python-dotenv` to load `.env`)
 3. **Documentation** of required environment variables
+
+**Dependencies**: The setup script requires `psycopg2` and `python-dotenv`. Ensure both are in `requirements.txt`:
+```txt
+psycopg2-binary
+python-dotenv
+```
 
 ## Step 1: Gather Project Information
 
@@ -96,11 +102,14 @@ import os
 import sys
 import argparse
 import psycopg2
+from dotenv import load_dotenv
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 
 def main():
     """Setup {project_name} database and user"""
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description='Setup {PROJECT_NAME} database')
     parser.add_argument('--pg-password', required=True,
                        help='PostgreSQL superuser password (required)')
