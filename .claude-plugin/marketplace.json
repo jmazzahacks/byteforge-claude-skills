@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Byteforge development skills collection",
-    "version": "1.4.1"
+    "version": "1.5.0"
   },
   "plugins": [
     {
@@ -21,7 +21,8 @@
         "./skills/flask-docker-deployment",
         "./skills/byteforge-loki-logging",
         "./skills/aegis-nextjs-frontend",
-        "./skills/mcp-docker-deployment"
+        "./skills/mcp-docker-deployment",
+        "./skills/python-project-scaffold"
       ]
     }
   ]

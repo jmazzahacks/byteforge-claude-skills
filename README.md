@@ -147,6 +147,35 @@ A skill that provides a production-ready Docker deployment pattern for Flask app
 
 ---
 
+### python-project-scaffold
+
+A skill that scaffolds a multi-repo Python workspace with shared models library, core library, Flask backend, and optional sub-projects.
+
+**What it creates:**
+- Directory skeleton under `{project}/` with sub-project directories
+- Root `CLAUDE.md` describing each sub-project and which skills to use
+- Workspace `.gitignore` for Python projects
+- Next-steps documentation for running existing skills
+
+**Features:**
+- ✅ Multi-repo workspace layout (models, core, backend)
+- ✅ Optional sub-projects (scripts, API clients, frontend)
+- ✅ Root CLAUDE.md with dependency chain and setup instructions
+- ✅ References existing skills for actual code generation
+- ✅ Celery + Redis option for background tasks
+- ✅ License selection (Proprietary, MIT, O'Saasy)
+
+**Design Principles:**
+1. **Skeleton Only** - Creates structure, defers code generation to existing skills
+2. **Multi-Repo Pattern** - Each sub-project is independent with its own venv and git
+3. **Dependency Chain** - Models → Core → Backend, clearly documented
+4. **Skill Composition** - Tells users which skills to run next in each directory
+5. **Convention Enforcement** - CLAUDE.md encodes project conventions upfront
+
+[View full python-project-scaffold documentation →](./skills/python-project-scaffold/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -249,6 +278,8 @@ byteforge-claude-skills/
 │   ├── flask-docker-deployment/
 │   │   └── SKILL.md
 │   ├── byteforge-loki-logging/
+│   │   └── SKILL.md
+│   ├── python-project-scaffold/
 │   │   └── SKILL.md
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
