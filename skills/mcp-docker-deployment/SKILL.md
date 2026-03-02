@@ -77,6 +77,7 @@ mcp = FastMCP(
     "my_mcp_server",
     host=os.getenv("FASTMCP_HOST", "127.0.0.1"),
     port=int(os.getenv("FASTMCP_PORT", "8000")),
+    stateless_http=True,
 )
 
 # ... register tools ...
@@ -87,6 +88,8 @@ if __name__ == "__main__":
 ```
 
 **CRITICAL**: Without explicit `host`/`port` args, the container binds to `127.0.0.1` and is unreachable despite `FASTMCP_HOST=0.0.0.0` being set. This is because FastMCP's pydantic-settings defaults take precedence over env vars when constructor args are provided.
+
+**CRITICAL**: `stateless_http=True` is required when running behind a reverse proxy (nginx). Without it, the server tracks sessions via `Mcp-Session-Id` headers. If the proxy drops that header or the SSE connection breaks, clients get `"Session not found"` errors. Stateless mode makes each request independent, which is the correct mode for containerized deployments behind a proxy.
 
 Supported transports:
 - `stdio` - Local development (Claude Code local MCP servers)
@@ -397,3 +400,5 @@ Auth is handled at the nginx layer via Bearer token headers. The MCP server does
 **Missing uvicorn or starlette (low-level SDK)** - Low-level SDK servers need `uvicorn` and `starlette` in `requirements.txt`. FastMCP bundles these, but the low-level SDK does not.
 
 **Wrong transport route (low-level SDK)** - SSE uses `/sse` and `/messages/`, streamable-http uses `/mcp`. These are NOT interchangeable. Make sure the client URL matches the transport configured on the server.
+
+**"Session not found" errors behind nginx** - The MCP SDK's streamable-http transport is stateful by default. During initialization, the server assigns a session ID and expects the client to send it back via the `Mcp-Session-Id` header on every request. Behind a reverse proxy, this header can be dropped or the SSE connection that maintains the session can be interrupted, causing `"Session not found"` errors. Fix: set `stateless_http=True` (FastMCP) or `stateless=True` (low-level SDK `StreamableHTTPSessionManager`). This disables session tracking so each request is handled independently.
