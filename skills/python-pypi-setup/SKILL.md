@@ -1,6 +1,6 @@
 ---
 name: python-pypi-setup
-description: Set up Python project for PyPI publishing with pyproject.toml, src layout, and build scripts. Use when creating a new Python package, setting up for PyPI distribution, or initializing a Python library project.
+description: Set up Python project for PyPI publishing or private GitHub distribution with pyproject.toml, src layout, and optional build scripts. Use when creating a new Python package, setting up for PyPI distribution, initializing a Python library project, or setting up a private library distributed via GitHub.
 ---
 
 # Python PyPI Project Setup Pattern
@@ -11,17 +11,18 @@ This skill helps you set up a Python project for PyPI publishing following moder
 
 Use this skill when:
 - Starting a new Python package for PyPI distribution
+- Setting up a private Python library distributed via GitHub
 - You want to use modern pyproject.toml-based configuration
 - You need a standardized src/ layout with explicit package discovery
-- You want automated build and publish scripts
+- You want automated build and publish scripts (PyPI path)
 
 ## What This Skill Creates
 
 1. **`pyproject.toml`** - Modern Python project configuration
 2. **`src/{package_name}/`** - Source layout with package structure
 3. **`.gitignore`** - Comprehensive Python gitignore
-4. **`dev-requirements.txt`** - Development dependencies (build, twine, testing tools)
-5. **`build-publish.sh`** - Automated build and publish script
+4. **`dev-requirements.txt`** - Development dependencies (includes build/twine for PyPI only)
+5. **`build-publish.sh`** - Automated build and publish script (PyPI only)
 6. **`LICENSE`** - License file (Proprietary, MIT, or O'Saasy)
 7. **`README.md`** - Basic project documentation
 
@@ -43,16 +44,20 @@ Use this skill when:
 
 5. **"What is your GitHub username?"** (for project URLs)
 
-6. **"What license do you want to use?"** (options: Proprietary, MIT, O'Saasy)
+6. **"Will this package be published to PyPI or installed from GitHub?"**
+   - **PyPI** — Public package registry. Includes build/twine tooling and a publish script.
+   - **GitHub** — Private library installed via `git+https://` URL. Skips PyPI-specific artifacts (build, twine, build-publish.sh).
+
+7. **"What license do you want to use?"** (options: Proprietary, MIT, O'Saasy)
    - **Proprietary**: All rights reserved, no open source distribution
    - **MIT**: Permissive open source, allows commercial use
    - **O'Saasy**: Modified MIT that reserves commercial SaaS rights for the copyright holder (see https://osaasy.dev/)
 
-7. **"What Python version should be the minimum requirement?"** (default: 3.8)
+8. **"What Python version should be the minimum requirement?"** (default: 3.8)
 
-8. **"What are your initial dependencies?"** (optional - comma-separated list, can be empty)
+9. **"What are your initial dependencies?"** (optional - comma-separated list, can be empty)
 
-9. **"What keywords describe your project?"** (optional - for PyPI searchability)
+10. **"What keywords describe your project?"** (optional - for PyPI searchability)
 
 ## Step 2: Create Directory Structure
 
@@ -266,8 +271,9 @@ dmypy.json
 
 ## Step 5: Create dev-requirements.txt
 
-Create `dev-requirements.txt` with development dependencies:
+Create `dev-requirements.txt` with development dependencies.
 
+**If distribution is PyPI:**
 ```
 build
 twine
@@ -276,11 +282,20 @@ black
 mypy
 ```
 
-These are the tools needed to build, publish, and develop the package. Add other dev tools as needed (isort, pytest-cov, etc.).
+**If distribution is GitHub:**
+```
+pytest
+black
+mypy
+```
 
-## Step 6: Create build-publish.sh
+These are the tools needed to develop (and for PyPI, build/publish) the package. Add other dev tools as needed (isort, pytest-cov, etc.).
 
-Create `build-publish.sh` with venv activation and build/publish commands:
+## Step 6: Create build-publish.sh (PyPI only)
+
+**If distribution is GitHub, skip this step entirely.**
+
+**If distribution is PyPI**, create `build-publish.sh` with venv activation and build/publish commands:
 
 ```bash
 #!/bin/bash
@@ -396,7 +411,9 @@ of a separate written agreement with the copyright holder.
 
 ## Step 9: Create README.md
 
-Create `README.md` with basic project documentation:
+Create `README.md` with basic project documentation. The Installation and Development sections vary by distribution type.
+
+**If distribution is PyPI:**
 
 ```markdown
 # {project-name}
@@ -450,9 +467,75 @@ pip install -e .
 {author_name} ({author_email})
 ```
 
-## Step 10: Make Script Executable
+**If distribution is GitHub:**
 
-Run:
+```markdown
+# {project-name}
+
+{project_description}
+
+## Installation
+
+### Public repo
+```bash
+pip install git+https://github.com/{github_username}/{project-name}.git
+```
+
+### Private repo (requires `CR_PAT` environment variable)
+```bash
+pip install git+https://${CR_PAT}@github.com/{github_username}/{project-name}.git
+```
+
+### As a dependency in pyproject.toml
+```toml
+dependencies = [
+    "{project-name} @ git+https://{env:CR_PAT}@github.com/{github_username}/{project-name}.git",
+]
+```
+
+### As a dependency in requirements.txt
+```
+{project-name} @ git+https://${CR_PAT}@github.com/{github_username}/{project-name}.git
+```
+
+## Usage
+
+```python
+import {package_name}
+
+# Add usage examples here
+```
+
+## Development
+
+### Setup
+
+```bash
+# Create virtual environment
+python -m venv .
+
+# Activate virtual environment
+source bin/activate  # On Windows: bin\Scripts\activate
+
+# Install dependencies
+pip install -r dev-requirements.txt
+pip install -e .
+```
+
+## License
+
+{license_name}
+
+## Author
+
+{author_name} ({author_email})
+```
+
+## Step 10: Make Script Executable (PyPI only)
+
+**If distribution is GitHub, skip this step.**
+
+**If distribution is PyPI**, run:
 ```bash
 chmod +x build-publish.sh
 ```
@@ -468,7 +551,9 @@ git commit -m "Initial project structure for PyPI package"
 
 ## Step 12: Document Next Steps
 
-Inform the user of the next steps:
+Inform the user of the next steps.
+
+**If distribution is PyPI:**
 
 1. **Install development dependencies**:
    ```bash
@@ -495,6 +580,35 @@ Inform the user of the next steps:
    ./build-publish.sh
    ```
 
+**If distribution is GitHub:**
+
+1. **Install development dependencies**:
+   ```bash
+   source bin/activate
+   pip install -r dev-requirements.txt
+   ```
+
+2. **Install package in development mode**:
+   ```bash
+   pip install -e .
+   ```
+
+3. **Write your code** in `src/{package_name}/`
+
+4. **Update version** in `pyproject.toml` before each release
+
+5. **Referencing this library from other projects**:
+   - In `pyproject.toml`:
+     ```toml
+     dependencies = [
+         "{project-name} @ git+https://{env:CR_PAT}@github.com/{github_username}/{project-name}.git",
+     ]
+     ```
+   - In `requirements.txt`:
+     ```
+     {project-name} @ git+https://${CR_PAT}@github.com/{github_username}/{project-name}.git
+     ```
+
 ## Design Principles
 
 This pattern follows these principles:
@@ -509,10 +623,12 @@ This pattern follows these principles:
 
 ## Example Usage in Claude Code
 
+### PyPI Distribution Example
+
 User: "Set up a Python package for PyPI"
 Claude: "What is your project name?"
 User: "awesome-lib"
-Claude: [Asks remaining questions including license: Proprietary, MIT, or O'Saasy]
+Claude: [Asks remaining questions, user selects **PyPI** for distribution]
 Claude:
 1. Creates src/awesome_lib/ directory structure
 2. Creates pyproject.toml with project metadata
@@ -521,6 +637,22 @@ Claude:
 5. Creates build-publish.sh script
 6. Creates LICENSE file (based on user's choice)
 7. Creates src/awesome_lib/__init__.py
-8. Creates README.md with instructions
+8. Creates README.md with PyPI install instructions
 9. Makes script executable
 10. Documents next steps for the user
+
+### GitHub Distribution Example
+
+User: "Set up a private Python library"
+Claude: "What is your project name?"
+User: "arcana-models"
+Claude: [Asks remaining questions, user selects **GitHub** for distribution]
+Claude:
+1. Creates src/arcana_models/ directory structure
+2. Creates pyproject.toml with project metadata
+3. Creates comprehensive .gitignore
+4. Creates dev-requirements.txt (no build/twine)
+5. Creates LICENSE file (based on user's choice)
+6. Creates src/arcana_models/__init__.py
+7. Creates README.md with git+https:// install instructions and dependency reference patterns
+8. Documents next steps for the user (no PyPI credentials or publish script)
