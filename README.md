@@ -35,16 +35,16 @@ A skill that provides a standardized pattern for setting up PostgreSQL databases
 
 ---
 
-### python-pypi-setup
+### python-lib-setup
 
-A skill that provides a modern, standardized pattern for setting up Python packages for PyPI publishing.
+A skill that provides a modern, standardized pattern for setting up Python libraries for PyPI publishing or private GitHub distribution.
 
 **What it creates:**
 - `pyproject.toml` - Modern Python project configuration with hatchling
 - `src/{package_name}/` - Source layout with explicit package discovery
 - `.gitignore` - Comprehensive Python artifact exclusions
-- `requirements.txt` - Development dependencies (build, twine)
-- `build-publish.sh` - Automated build and publish script with venv activation
+- `dev-requirements.txt` - Development dependencies (includes build/twine for PyPI only)
+- `build-publish.sh` - Automated build and publish script (PyPI only)
 - `README.md` - Basic project documentation
 
 **Features:**
@@ -52,7 +52,9 @@ A skill that provides a modern, standardized pattern for setting up Python packa
 - ✅ Src layout pattern for better code organization
 - ✅ Explicit package discovery with hatchling
 - ✅ Comprehensive .gitignore for Python projects
-- ✅ Automated build-publish script with venv activation
+- ✅ PyPI or GitHub distribution paths
+- ✅ Automated build-publish script with venv activation (PyPI path)
+- ✅ git+https:// install instructions with CR_PAT patterns (GitHub path)
 - ✅ Parameterized project setup (interactive questions)
 - ✅ License selection (Proprietary, MIT, O'Saasy)
 - ✅ Proper PyPI classifiers and metadata
@@ -64,9 +66,9 @@ A skill that provides a modern, standardized pattern for setting up Python packa
 4. **Virtual Environment Convention** - Uses bin/ at project root
 5. **Comprehensive .gitignore** - Covers all common Python artifacts
 6. **Interactive Setup** - Asks user questions before generating files
-7. **Automated Publishing** - Simple script for build and PyPI upload
+7. **Flexible Distribution** - Supports PyPI publishing and private GitHub libraries
 
-[View full python-pypi-setup documentation →](./skills/python-pypi-setup/SKILL.md)
+[View full python-lib-setup documentation →](./skills/python-lib-setup/SKILL.md)
 
 ---
 
@@ -218,12 +220,12 @@ Claude will recognize the postgres-setup skill and:
 4. Generate `dev_scripts/setup_database.py` with project-specific naming
 5. Document required environment variables
 
-### python-pypi-setup example:
+### python-lib-setup example:
 ```
 User: "Set up a Python package for PyPI"
 ```
 
-Claude will recognize the python-pypi-setup skill and:
+Claude will recognize the python-lib-setup skill and:
 1. Ask for project details (name, description, author, license, etc.)
 2. Create src/ directory structure with package
 3. Generate `pyproject.toml` with proper configuration
@@ -271,7 +273,7 @@ byteforge-claude-skills/
 ├── skills/                      # All skills
 │   ├── postgres-setup/
 │   │   └── SKILL.md
-│   ├── python-pypi-setup/
+│   ├── python-lib-setup/
 │   │   └── SKILL.md
 │   ├── flask-smorest-api/
 │   │   └── SKILL.md

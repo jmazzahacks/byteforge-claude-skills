@@ -1,5 +1,5 @@
 ---
-name: python-pypi-setup
+name: python-lib-setup
 description: Set up Python project for PyPI publishing or private GitHub distribution with pyproject.toml, src layout, and optional build scripts. Use when creating a new Python package, setting up for PyPI distribution, initializing a Python library project, or setting up a private library distributed via GitHub.
 ---
 

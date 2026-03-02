@@ -107,18 +107,18 @@ This is a multi-repo workspace. Each sub-directory is an independent project wit
 
 ### {project}-models (shared models library)
 
-Use the `python-pypi-setup` skill to initialize this as a pip package:
+Use the `python-lib-setup` skill to initialize this as a pip package:
 ```
 cd {project}-models
-# Invoke python-pypi-setup skill
+# Invoke python-lib-setup skill
 ```
 
 ### {project}-core (business logic library)
 
-Use the `python-pypi-setup` skill to initialize this as a pip package:
+Use the `python-lib-setup` skill to initialize this as a pip package:
 ```
 cd {project}-core
-# Invoke python-pypi-setup skill
+# Invoke python-lib-setup skill
 ```
 
 Add `{project}-models` as a GitHub dependency in `pyproject.toml`:
@@ -175,10 +175,10 @@ Standalone scripts for development, data migration, or maintenance tasks. Each s
 {# Include this section only if {project}-api-python was selected: }
 ### {project}-api-python (Python API client)
 
-Use the `python-pypi-setup` skill to initialize this as a pip package:
+Use the `python-lib-setup` skill to initialize this as a pip package:
 ```
 cd {project}-api-python
-# Invoke python-pypi-setup skill
+# Invoke python-lib-setup skill
 ```
 
 {# Include this section only if {project}-api-js was selected: }
@@ -279,10 +279,10 @@ After creating all files, tell the user:
 
 1. **Initialize git** in the root `{project}/` directory
 2. **Run skills in order** for each sub-project:
-   - `cd {project}-models/` → run `python-pypi-setup`
-   - `cd {project}-core/` → run `python-pypi-setup`
+   - `cd {project}-models/` → run `python-lib-setup`
+   - `cd {project}-core/` → run `python-lib-setup`
    - `cd docker-backend/` → run `flask-smorest-api`, then `postgres-setup`, then `flask-docker-deployment`, then `byteforge-loki-logging`
    - (If frontend selected) `cd docker-frontend/` → run `aegis-nextjs-frontend`
-   - (If Python API client selected) `cd {project}-api-python/` → run `python-pypi-setup`
+   - (If Python API client selected) `cd {project}-api-python/` → run `python-lib-setup`
 3. **Create GitHub repos** for each sub-project under `{github_org}/`
 4. **Set up `.env`** files with required environment variables

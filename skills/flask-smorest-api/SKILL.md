@@ -528,7 +528,7 @@ db = service_manager.get_database()
 ```
 
 ### Package Structure
-If publishing as a package, use **python-pypi-setup** skill:
+If publishing as a package, use **python-lib-setup** skill:
 ```
 User: "Set up Python package for PyPI"
 ```
