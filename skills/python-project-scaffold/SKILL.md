@@ -121,10 +121,13 @@ cd {project}-core
 # Invoke python-pypi-setup skill
 ```
 
-Add `{project}-models` as a dependency in `pyproject.toml`:
+Add `{project}-models` as a GitHub dependency in `pyproject.toml`:
 ```toml
 dependencies = [
+    # Public repo:
     "{project}-models @ git+https://github.com/{github_org}/{project}-models.git",
+    # Private repo (requires CR_PAT environment variable):
+    # "{project}-models @ git+https://{env:CR_PAT}@github.com/{github_org}/{project}-models.git",
 ]
 ```
 
@@ -136,10 +139,14 @@ Set up in this order:
 3. **`flask-docker-deployment`** — Dockerfile, build script, versioning
 4. **`byteforge-loki-logging`** — Structured logging to Grafana Loki
 
-Add model and core libraries as dependencies in `requirements.txt`:
+Add model and core libraries as GitHub dependencies in `requirements.txt`:
 ```
+# Public repos:
 {project}-models @ git+https://github.com/{github_org}/{project}-models.git
 {project}-core @ git+https://github.com/{github_org}/{project}-core.git
+# Private repos (requires CR_PAT environment variable):
+# {project}-models @ git+https://${CR_PAT}@github.com/{github_org}/{project}-models.git
+# {project}-core @ git+https://${CR_PAT}@github.com/{github_org}/{project}-core.git
 ```
 
 {# Include this section only if Celery + Redis was selected: }
@@ -186,7 +193,7 @@ Each sub-project with Python uses its own virtual environment:
 cd {project}-models/
 python -m venv bin
 source bin/activate
-pip install -e ".[dev]"
+pip install -r dev-requirements.txt
 ```
 
 Run tests:
@@ -209,6 +216,7 @@ source bin/activate && python {project_name}.py
 - **Type hints** — All function parameters and return types must have type annotations
 - **No lambdas** — Use named functions or loops instead
 - **Virtual environments** — Always `source bin/activate` before running Python
+- **No local path dependencies** — NEVER use `pip install -e ../sibling-project` or `file:` references. Cross-repo dependencies MUST use GitHub URLs. Public repos: `git+https://github.com/{github_org}/pkg.git`. Private repos: add `CR_PAT` token — in `pyproject.toml`: `git+https://{env:CR_PAT}@github.com/...`, in `requirements.txt`: `git+https://${CR_PAT}@github.com/...`
 ```
 
 **IMPORTANT**: When generating the actual CLAUDE.md file:
