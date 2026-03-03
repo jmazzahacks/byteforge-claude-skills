@@ -17,7 +17,7 @@ Use this skill when:
 
 ## What This Skill Creates
 
-1. **requirements.txt entry** - Adds `byteforge-loki-logging` dependency (public PyPI package)
+1. **requirements.txt entry** - Adds `byteforge-loki-logging` dependency (private GitHub library)
 2. **Logging initialization** - Adds `configure_logging()` call to main application file
 3. **CA certificate configuration** - Docker Compose volume mount for your Loki CA certificate
 4. **Environment variable documentation** - All required Loki configuration
@@ -42,8 +42,8 @@ Use this skill when:
 Add this line to `requirements.txt`:
 
 ```txt
-# Logging configuration with Loki support
-byteforge-loki-logging
+# Logging configuration with Loki support (private GitHub library)
+byteforge-loki-logging @ git+https://${CR_PAT}@github.com/jmazzahacks/byteforge-loki-logging.git
 ```
 
 Install the dependency:
@@ -51,7 +51,7 @@ Install the dependency:
 pip install -r requirements.txt
 ```
 
-No private tokens or build args needed — `byteforge-loki-logging` is a public PyPI package.
+**Note**: Requires the `CR_PAT` environment variable set to a GitHub personal access token with repo read access.
 
 ## Step 3: Configure Logging in Application
 
@@ -327,6 +327,7 @@ app = create_app()
 - Symptoms: application logs visible in `docker logs` or container stdout but missing from Grafana/Loki
 
 **Import error for byteforge_loki_logging:**
+- Ensure `CR_PAT` environment variable is set with a valid GitHub token
 - Run `pip install -r requirements.txt`
 - Verify installed: `pip list | grep byteforge-loki-logging`
 
