@@ -41,8 +41,8 @@ Before using this skill, ensure:
    - Example: `hyperopt_daemon:app` or `api_server:create_app()`
 
 2. **"What port does your Flask app use?"**
-   - Default: 5000
-   - Example: 5678, 8080, 3000
+   - Pick a random port above 5000 (e.g., 5678, 6100, 7200) — avoid well-known ports
+   - Do NOT default to 5000
 
 3. **"What is your container registry URL?"**
    - Examples:
@@ -102,11 +102,12 @@ ENV PYTHONPATH=/app
 ENV PORT={port}
 
 # Run with gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:{port}", "--workers", "{workers}", "{module}:{app}"]
+# Port is read from PORT env var so it can be overridden at runtime
+CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} {module}:{app}
 ```
 
 **CRITICAL Replacements:**
-- `{port}` → Application port (e.g., 5678)
+- `{port}` → Default application port (e.g., 5678). This is the default value for the `PORT` env var — it can be overridden at runtime with `-e PORT=XXXX`
 - `{workers}` → Number of workers (e.g., 4, or 1 for background jobs)
 - `{module}` → Python module name (e.g., hyperopt_daemon)
 - `{app}` → App variable name (e.g., app or create_app())
@@ -140,7 +141,7 @@ EXPOSE {port}
 ENV PYTHONPATH=/app
 ENV PORT={port}
 
-CMD ["gunicorn", "--bind", "0.0.0.0:{port}", "--workers", "{workers}", "{module}:{app}"]
+CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} {module}:{app}
 ```
 
 ## Step 3: Create build-publish.sh Script
@@ -416,21 +417,24 @@ This pattern follows these principles:
 
 ### Pattern 1: Standard Web API
 ```dockerfile
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "app:create_app()"]
+ENV PORT=6100
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 app:create_app()
 ```
 - Multiple workers for concurrent requests
 - Factory pattern with `create_app()`
 
 ### Pattern 2: Background Job Worker
 ```dockerfile
-CMD ["gunicorn", "--bind", "0.0.0.0:5678", "--workers", "1", "daemon:app"]
+ENV PORT=5678
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 daemon:app
 ```
 - Single worker to avoid job conflicts
 - Direct app instance
 
 ### Pattern 3: High-Traffic API
 ```dockerfile
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "8", "--timeout", "120", "api:app"]
+ENV PORT=7200
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 8 --timeout 120 api:app
 ```
 - More workers for higher concurrency
 - Increased timeout for long-running requests
@@ -598,7 +602,8 @@ COPY . .
 ENV PATH=/root/.local/bin:$PATH
 RUN useradd --create-home appuser && chown -R appuser:appuser /app
 USER appuser
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "app:app"]
+ENV PORT=6100
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 app:app
 ```
 
 This pattern:
