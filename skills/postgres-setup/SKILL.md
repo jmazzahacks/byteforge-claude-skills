@@ -265,7 +265,7 @@ If the project needs a database driver/connection manager, create one following 
 
 **Key patterns to follow:**
 
-1. **Connection Pooling**: Use `ThreadedConnectionPool` from psycopg2
+1. **Connection Pooling with TCP Keepalives**: Use `ThreadedConnectionPool` from psycopg2 with TCP keepalives to detect dead connections
    ```python
    from psycopg2.pool import ThreadedConnectionPool
 
@@ -275,23 +275,69 @@ If the project needs a database driver/connection manager, create one following 
        host=db_host,
        database=db_name,
        user=db_user,
-       password=db_passwd
+       password=db_passwd,
+       keepalives=1,
+       keepalives_idle=30,
+       keepalives_interval=10,
+       keepalives_count=5,
    )
    ```
+   TCP keepalives send probes after 30s idle, every 10s, and declare dead after 5 failures (~80s). Without this, the OS won't detect silently dropped connections for hours.
 
-2. **Context Managers**: Provide context managers for connections and cursors
+2. **Health Check Before Yielding Connections**: Pooled connections can go stale if PostgreSQL closes idle connections (server timeout, network issue, PG restart). `SimpleConnectionPool`/`ThreadedConnectionPool` do zero health checking — they hand out dead connections. Always run `SELECT 1` before yielding:
+   ```python
+   def _is_connection_alive(self, conn) -> bool:
+       try:
+           conn.cursor().execute("SELECT 1")
+           conn.rollback()
+           return True
+       except (psycopg2.OperationalError, psycopg2.InterfaceError):
+           return False
+   ```
+
+3. **Context Managers with Safe Error Handling**: Provide context managers for connections and cursors. The error handler must handle dead connections — `rollback()` and `putconn()` can both throw on a dead connection, causing confusing double-exceptions if not caught:
    ```python
    @contextmanager
-   def get_cursor(self, commit=True, cursor_factory=None):
+   def get_connection(self):
+       conn = None
+       try:
+           conn = self.pool.getconn()
+           if not self._is_connection_alive(conn):
+               self.pool.putconn(conn, close=True)
+               conn = self.pool.getconn()
+           yield conn
+           conn.commit()
+       except Exception:
+           if conn:
+               try:
+                   conn.rollback()
+               except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                   pass
+           raise
+       finally:
+           if conn:
+               try:
+                   self.pool.putconn(conn)
+               except Exception:
+                   try:
+                       conn.close()
+                   except Exception:
+                       pass
+
+   @contextmanager
+   def get_cursor(self, commit: bool = True, cursor_factory=None):
        """Context manager for database cursors with automatic commit/rollback"""
-       with self._get_connection() as conn:
+       with self.get_connection() as conn:
            cursor = conn.cursor(cursor_factory=cursor_factory)
            try:
                yield cursor
                if commit:
                    conn.commit()
            except Exception:
-               conn.rollback()
+               try:
+                   conn.rollback()
+               except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                   pass
                raise
            finally:
                cursor.close()
@@ -331,13 +377,65 @@ If the project needs a database driver/connection manager, create one following 
 ### Example Driver Structure:
 ```python
 class {ProjectName}DB:
-    def __init__(self, db_host, db_name, db_user, db_passwd, min_conn=2, max_conn=10):
-        self.pool = ThreadedConnectionPool(...)
+    def __init__(self, db_host: str, db_name: str, db_user: str, db_passwd: str,
+                 min_conn: int = 2, max_conn: int = 10):
+        self.pool = ThreadedConnectionPool(
+            min_conn, max_conn,
+            host=db_host, database=db_name, user=db_user, password=db_passwd,
+            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
+        )
+
+    def _is_connection_alive(self, conn) -> bool:
+        try:
+            conn.cursor().execute("SELECT 1")
+            conn.rollback()
+            return True
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            return False
 
     @contextmanager
-    def get_cursor(self, commit=True, cursor_factory=None):
-        # Context manager for cursors
-        pass
+    def get_connection(self):
+        conn = None
+        try:
+            conn = self.pool.getconn()
+            if not self._is_connection_alive(conn):
+                self.pool.putconn(conn, close=True)
+                conn = self.pool.getconn()
+            yield conn
+            conn.commit()
+        except Exception:
+            if conn:
+                try:
+                    conn.rollback()
+                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                    pass
+            raise
+        finally:
+            if conn:
+                try:
+                    self.pool.putconn(conn)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+    @contextmanager
+    def get_cursor(self, commit: bool = True, cursor_factory=None):
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=cursor_factory)
+            try:
+                yield cursor
+                if commit:
+                    conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                    pass
+                raise
+            finally:
+                cursor.close()
 
     def load_item_by_id(self, item_id: str) -> Item:
         with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
@@ -369,10 +467,13 @@ This pattern follows these principles:
 
 ### Database Driver (if applicable):
 1. **Connection pooling** - Use ThreadedConnectionPool for efficient connection reuse
-2. **Context managers** - Automatic commit/rollback and resource cleanup
-3. **RealDictCursor for reads** - Always use RealDictCursor when loading data for easy dict conversion
-4. **Unix timestamps** - Store as BIGINT, convert only for display
-5. **Proper cleanup** - Close pool on destruction
+2. **TCP keepalives** - Enable keepalives on all pooled connections to detect dead connections
+3. **Health check on checkout** - Run `SELECT 1` before yielding a pooled connection; discard and replace if stale
+4. **Safe error handling** - Wrap rollback/putconn in try/except since dead connections throw on cleanup too
+5. **Context managers** - Automatic commit/rollback and resource cleanup
+6. **RealDictCursor for reads** - Always use RealDictCursor when loading data for easy dict conversion
+7. **Unix timestamps** - Store as BIGINT, convert only for display
+8. **Proper cleanup** - Close pool on destruction
 
 ## Example Usage in Claude Code
 
