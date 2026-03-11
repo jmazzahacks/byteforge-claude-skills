@@ -292,6 +292,55 @@ app = create_app()
 
 **CRITICAL**: The `for` loop clearing dependency loggers must run **after** Flask and Api are initialized (so their logger setup has already run), otherwise Flask/gunicorn will re-create their handlers and override your changes.
 
+### Multiprocessing / Forked Child Processes
+
+**The general rule: `configure_logging()` must be called in every process that logs.** The Loki handler uses a background `QueueListener` thread and a `requests.Session` with an SSL context — neither survives `fork()`. A child process inherits a copy of the logging config with a dead handler, and logs go into a queue that nobody reads. No errors are raised because the queue accepts writes silently.
+
+This applies to:
+- `multiprocessing.Process` target functions
+- `os.fork()` child processes
+- Any code that spawns child processes that emit logs
+
+**Fix**: Call `configure_logging()` at the top of the child process entry point, before any logging:
+
+```python
+import os
+import logging
+import multiprocessing
+from byteforge_loki_logging import configure_logging
+
+def run_job(job_id: str) -> None:
+    """Target function for multiprocessing.Process — runs in a forked child."""
+    # CRITICAL: The parent's Loki handler (QueueListener thread + requests.Session)
+    # does not survive fork(). Re-initialize logging in the child process so it
+    # gets its own handler, thread, and SSL context.
+    debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+    log_level = os.environ.get('LOG_LEVEL', 'INFO')
+    configure_logging(
+        application_tag='my-worker',
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"Starting job {job_id}")
+    # ... do work ...
+    logger.info(f"Finished job {job_id}")
+
+
+# In the parent process:
+process = multiprocessing.Process(target=run_job, args=(job_id,))
+process.start()
+```
+
+**Summary of where `configure_logging()` must be called:**
+
+| Process | Where to call | Why |
+|---------|--------------|-----|
+| Gunicorn worker | Inside `create_app()` | Runs post-fork in worker process |
+| `multiprocessing.Process` child | Top of target function | QueueListener thread + SSL context don't survive fork |
+| Direct `os.fork()` child | Immediately after fork in child branch | Same reason |
+
 ## Troubleshooting
 
 **Logs not appearing in Loki (production):**
@@ -325,6 +374,11 @@ app = create_app()
 - Werkzeug and gunicorn create their own loggers with `propagate=False` and their own `StreamHandler` instances
 - Fix: clear handlers and set `propagate=True` on `werkzeug`, `gunicorn`, `gunicorn.error`, and `gunicorn.access` loggers inside `create_app()` (see Flask + Gunicorn section above)
 - Symptoms: application logs visible in `docker logs` or container stdout but missing from Grafana/Loki
+
+**Logs from multiprocessing.Process child processes not appearing in Loki:**
+- The parent's QueueListener thread and requests.Session do not survive `fork()`. The child inherits a dead handler — logs go into a queue that nobody reads. No errors are raised.
+- Fix: call `configure_logging()` at the top of the child process target function, before any logging (see Multiprocessing section above)
+- Symptoms: parent process logs appear in Loki, but all child process logs vanish silently
 
 **Import error for byteforge_loki_logging:**
 - Ensure `CR_PAT` environment variable is set with a valid GitHub token
