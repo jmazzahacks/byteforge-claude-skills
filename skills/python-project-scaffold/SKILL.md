@@ -40,7 +40,7 @@ Use this skill when:
    - `python-scripts` — standalone utility scripts
    - `{project}-api-python` — Python API client library
    - `{project}-api-js` — TypeScript API client library
-   - `docker-frontend` — Next.js frontend
+   - `{project}-frontend` — Next.js frontend
 
 5. **"Does the backend need Celery + Redis for background tasks?"** (yes/no)
 
@@ -58,7 +58,7 @@ Create empty directories under `{project}/`. Use `mkdir -p` to create each direc
 {project}/
 ├── {project}-models/
 ├── {project}-core/
-└── docker-backend/
+└── {project}-backend/
 ```
 
 **Conditionally created based on Step 1 answers:**
@@ -66,7 +66,7 @@ Create empty directories under `{project}/`. Use `mkdir -p` to create each direc
 ├── python-scripts/          # if "python-scripts" selected
 ├── {project}-api-python/    # if Python API client selected
 ├── {project}-api-js/        # if TypeScript API client selected
-└── docker-frontend/         # if Next.js frontend selected
+└── {project}-frontend/         # if Next.js frontend selected
 ```
 
 ## Step 3: Create Root CLAUDE.md
@@ -86,22 +86,22 @@ This is a multi-repo workspace. Each sub-directory is an independent project wit
 |-----------|---------|------|
 | `{project}-models/` | Shared data models and schemas | pip package (library) |
 | `{project}-core/` | Business logic and service layer | pip package (library) |
-| `docker-backend/` | Flask REST API server | Docker service |
+| `{project}-backend/` | Flask REST API server | Docker service |
 {# Include rows for optional sub-projects only if selected: }
 {# | `python-scripts/` | Standalone utility scripts | Scripts | }
 {# | `{project}-api-python/` | Python API client library | pip package (library) | }
 {# | `{project}-api-js/` | TypeScript API client library | npm package | }
-{# | `docker-frontend/` | Next.js frontend application | Docker service | }
+{# | `{project}-frontend/` | Next.js frontend application | Docker service | }
 
 ## Dependency Chain
 
 ```
-{project}-models  →  {project}-core  →  docker-backend
+{project}-models  →  {project}-core  →  {project}-backend
 ```
 
 - **{project}-models** has no internal dependencies. It defines shared data models.
 - **{project}-core** depends on `{project}-models`. It contains business logic.
-- **docker-backend** depends on both `{project}-models` and `{project}-core`.
+- **{project}-backend** depends on both `{project}-models` and `{project}-core`.
 
 ## Setting Up Each Sub-Project
 
@@ -131,7 +131,7 @@ dependencies = [
 ]
 ```
 
-### docker-backend (Flask API server)
+### {project}-backend (Flask API server)
 
 Set up in this order:
 1. **`flask-smorest-api`** — Flask app factory, blueprints, Marshmallow schemas
@@ -155,12 +155,12 @@ Add model and core libraries as GitHub dependencies in `requirements.txt`:
 This backend uses Celery for background task processing with Redis as the broker. Environment variables:
 - `{PROJECT_NAME}_REDIS_URL` — Redis connection URL (e.g., `redis://localhost:6379/0`)
 
-{# Include this section only if docker-frontend was selected: }
-### docker-frontend (Next.js frontend)
+{# Include this section only if {project}-frontend was selected: }
+### {project}-frontend (Next.js frontend)
 
 Use the `aegis-nextjs-frontend` skill to scaffold the frontend:
 ```
-cd docker-frontend
+cd {project}-frontend
 # Invoke aegis-nextjs-frontend skill
 ```
 
@@ -203,7 +203,7 @@ source bin/activate && pytest
 
 Start the backend locally:
 ```bash
-cd docker-backend/
+cd {project}-backend/
 source bin/activate && python {project_name}.py
 ```
 
@@ -281,8 +281,8 @@ After creating all files, tell the user:
 2. **Run skills in order** for each sub-project:
    - `cd {project}-models/` → run `python-lib-setup`
    - `cd {project}-core/` → run `python-lib-setup`
-   - `cd docker-backend/` → run `flask-smorest-api`, then `postgres-setup`, then `flask-docker-deployment`, then `byteforge-loki-logging`
-   - (If frontend selected) `cd docker-frontend/` → run `aegis-nextjs-frontend`
+   - `cd {project}-backend/` → run `flask-smorest-api`, then `postgres-setup`, then `flask-docker-deployment`, then `byteforge-loki-logging`
+   - (If frontend selected) `cd {project}-frontend/` → run `aegis-nextjs-frontend`
    - (If Python API client selected) `cd {project}-api-python/` → run `python-lib-setup`
 3. **Create GitHub repos** for each sub-project under `{github_org}/`
 4. **Set up `.env`** files with required environment variables
