@@ -51,7 +51,7 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
    - Used in metadata, home page subtitle, health check
 
 6. **"Does your backend need to provision users when they verify on Aegis? If yes, what backend handles it?"** (e.g., "Yes, Flask backend" / "Yes, Next.js API routes" / "No")
-   - Determines whether to include webhook setup instructions in Step 13
+   - Determines whether to include webhook setup instructions in Step 14
 
 ## Step 2: Create Directory Structure
 
@@ -84,6 +84,8 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 │   └── LanguageSwitcher.tsx
 ├── messages/
 │   └── en.json
+├── public/
+│   └── .gitkeep                        # required so Dockerfile COPY /app/public succeeds
 ├── proxy.ts                            # next-intl middleware
 ├── package.json
 ├── next.config.ts
@@ -92,8 +94,10 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 ├── postcss.config.mjs
 ├── global.d.ts
 ├── .env.example
+├── .gitignore                          # includes VERSION (and build-publish.sh if Tier 2)
 ├── Dockerfile
-└── docker-compose.example.yaml
+├── docker-compose.example.yaml
+└── build-publish.sh                    # chmod +x, see Step 12
 ```
 
 ## Step 3: Create Configuration Files
@@ -193,7 +197,37 @@ Generate from `references/docker-templates.md`:
 - `docker-compose.example.yaml` - Service definition with image URL and port mapping
 - `app/api/health/route.ts` - Returns JSON with status, service name, and unix timestamp
 
-## Step 12: Configure Loki Logging
+## Step 12: Create Build & Publish Script
+
+Generate `build-publish.sh` from `references/build-publish-template.md`. **Ask the user which tier to use** before generating:
+
+- **Tier 1 (Standard)** — values sourced from environment. Best for CI/CD and teams. Committed to the repo.
+- **Tier 2 (Baked-in)** — `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` hardcoded at the top of the script. Best for developer laptops with a single stable deployment target. Must be gitignored.
+
+**Why this step exists:** The `flask-docker-deployment` `build-publish.sh` pattern only passes `CR_PAT` as a build arg. A Next.js frontend also needs `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` as build args because those values are baked into the client JavaScript bundle at build time. Blindly copying the Flask pattern produces an image that starts successfully but has the wrong backend URL in the client bundle.
+
+Actions:
+
+1. **Generate `build-publish.sh`** from the chosen tier in the template. Replace `{registry_url}` with the container registry URL from Step 1. For Tier 2, also replace `{aegis_api_url}` and `{site_domain}`.
+
+2. **`chmod +x build-publish.sh`**
+
+3. **Create `public/` with a `.gitkeep`:**
+   ```bash
+   mkdir -p public && touch public/.gitkeep
+   ```
+   The Dockerfile has `COPY --from=builder /app/public ./public`, which fails if the directory does not exist. Next.js does not create `public/` by default.
+
+4. **Create or update `.gitignore`** to include:
+   ```
+   VERSION
+   ```
+   For Tier 2, also add:
+   ```
+   build-publish.sh
+   ```
+
+## Step 13: Configure Loki Logging
 
 Generate `lib/logger.ts` from `references/logging-templates.md`.
 
@@ -207,7 +241,7 @@ After creating `lib/logger.ts`, import the `logger` singleton in all API route h
 
 **CRITICAL**: `byteforge-loki-logging-ts` is server-side only (uses `node:https`). Never import it in `'use client'` files or Edge Runtime routes.
 
-## Step 13: Configure Aegis Webhook (Optional)
+## Step 14: Configure Aegis Webhook (Optional)
 
 If the user indicated their backend needs to provision users on verification (Step 1, question 6), guide them through webhook setup using `references/webhook-templates.md`.
 
@@ -224,7 +258,7 @@ Key actions:
 
 If the user does **not** need webhook provisioning, skip this step entirely.
 
-## Step 14: Initialize and Verify
+## Step 15: Initialize and Verify
 
 ```bash
 npm install
@@ -268,7 +302,7 @@ Verify all 10 pages generate (3 locales × pages if multiple languages, or just 
 ## Integration with Other Skills
 
 ### Docker Deployment
-For custom build scripts, reference **flask-docker-deployment** pattern for `build-publish.sh` with auto-versioning.
+The `build-publish.sh` script generated in Step 12 is **specific to this skill** — do not substitute the `flask-docker-deployment` version. Next.js frontends require `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` as build args (they are baked into the client JavaScript bundle at build time), and the frontend template validates all three build args up front to avoid silent misconfiguration. See `references/build-publish-template.md` for the full template and rationale.
 
 ### Database
 If the project needs a database, use **postgres-setup** skill.
@@ -291,4 +325,5 @@ All template code is organized in reference files for progressive loading:
 - **`references/design-system.md`** - globals.css with full design system
 - **`references/logging-templates.md`** - lib/logger.ts with Loki and console dual-mode logging
 - **`references/docker-templates.md`** - Dockerfile, docker-compose, health endpoint
+- **`references/build-publish-template.md`** - build-publish.sh script (two tiers: env-sourced and baked-in) with auto-versioning, three-build-arg validation, and public/ directory gotcha
 - **`references/webhook-templates.md`** - Aegis user.verified webhook contract, signature verification, and provisioning pattern
