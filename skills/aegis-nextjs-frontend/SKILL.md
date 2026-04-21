@@ -310,6 +310,13 @@ If the project needs a database, use **postgres-setup** skill.
 ### Loki Logging (Flask backends)
 If the project also has a Flask backend on the same Loki infrastructure, use **byteforge-loki-logging** skill for the Python side. Both skills push to the same Grafana Loki instance and can be queried together using the `application` label.
 
+### Backend Token Validation (`/api/auth/me`)
+When the frontend built with this skill talks to a custom backend (Next.js API routes, a sibling Flask service, etc.), that backend should validate incoming Aegis bearer tokens by forwarding them to `GET /api/auth/me` rather than trusting a client-asserted `user_id`. This is the supported service-to-service auth pattern as of Aegis image version 39 / `byteforge-aegis-client-js@2.8.0` / `byteforge-aegis-client-python@1.2.0`.
+
+The frontend itself does **not** need to call `/me` — it already has user info from `/api/auth/login`. Use `/me` only on the backend side.
+
+See `references/backend-auth-templates.md` for drop-in middleware: a Next.js API route helper (`lib/aegisAuth.ts`) and a Flask decorator (`@aegis_auth_required`), both with short-TTL token caching and the 401-failure-mode guidance baked in.
+
 ## Additional Resources
 
 ### Reference Files
@@ -327,3 +334,4 @@ All template code is organized in reference files for progressive loading:
 - **`references/docker-templates.md`** - Dockerfile, docker-compose, health endpoint
 - **`references/build-publish-template.md`** - build-publish.sh script (two tiers: env-sourced and baked-in) with auto-versioning, three-build-arg validation, and public/ directory gotcha
 - **`references/webhook-templates.md`** - Aegis user.verified webhook contract, signature verification, and provisioning pattern
+- **`references/backend-auth-templates.md`** - `/api/auth/me` introspection pattern with Next.js API route helper and Flask decorator for validating Aegis tokens on downstream backends
