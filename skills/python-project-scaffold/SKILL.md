@@ -34,7 +34,7 @@ Use this skill when:
 
 2. **"Brief project description?"** (one or two sentences for the CLAUDE.md header)
 
-3. **"What is the GitHub org or owner?"** (e.g., `jmazzahacks`, `Really-Bad-Apps`)
+3. **"What is the GitHub org or owner?"** (e.g., `jmazzahacks`)
 
 4. **"Which optional sub-projects do you need?"** (multi-select)
    - `python-scripts` — standalone utility scripts
