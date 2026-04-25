@@ -178,11 +178,23 @@ CRITICAL: This file must be placed in the project root directory so the relative
 ## 7. .env.example
 
 ```
-# Aegis Authentication API URL (browser-accessible)
+# Aegis Authentication API URL (browser-accessible — used only for the
+# unprotected getSiteByDomain bootstrap)
 NEXT_PUBLIC_AEGIS_API_URL={aegis_api_url}
 
 # Site domain for authentication (must match aegis site configuration)
 NEXT_PUBLIC_SITE_DOMAIN={site_domain}
+
+# Server-side Aegis URL (used by /api/frontend/auth/* proxy routes)
+AEGIS_API_URL={aegis_api_url}
+
+# Per-tenant secret for X-Tenant-Api-Key header. Get from the Aegis admin
+# dashboard. SERVER-SIDE ONLY — never expose in browser code.
+# See references/tenant-api-key-templates.md for the full pattern.
+AEGIS_TENANT_API_KEY={paste_from_aegis_admin_dashboard}
+
+# Site ID from Aegis (server-side, used by proxy routes for verify-email/etc.)
+AEGIS_SITE_ID={your_site_id}
 
 # Logging: set DEBUG_LOCAL=true for console output, omit or set to false for Loki
 DEBUG_LOCAL=true

@@ -42,7 +42,13 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
    - Used for `NEXT_PUBLIC_SITE_DOMAIN`
 
 3. **"What is the Aegis API URL?"** (default: `https://aegis.reallybadapps.com`)
-   - Used for `NEXT_PUBLIC_AEGIS_API_URL`
+   - Used for `NEXT_PUBLIC_AEGIS_API_URL` (browser bootstrap) and `AEGIS_API_URL` (server-side proxy)
+
+3a. **"What is the tenant API key for this site? (Get it from the Aegis admin dashboard → Site → Settings → Tenant API Key)"**
+   - Used for `AEGIS_TENANT_API_KEY` (server-side only). REQUIRED for the gated public auth endpoints. See Step 5b and `references/tenant-api-key-templates.md`.
+
+3b. **"What is the site_id for this site in Aegis?"** (visible in the admin dashboard)
+   - Used for `AEGIS_SITE_ID` (server-side, used by proxy routes for verify-email/etc.).
 
 4. **"What is the container registry URL?"** (e.g., `ghcr.io/org/project-frontend`)
    - Used in docker-compose and build scripts
@@ -133,6 +139,25 @@ Generate files from `references/auth-templates.md`:
 - `lib/useAuth.ts` - React hook that reads auth state from localStorage, proactively refreshes tokens (5-minute buffer, 60-second check interval), and auto-logs out on refresh failure.
 
 These files are identical across projects except for the default env variable values (`{aegis_api_url}`, `{site_domain}`).
+
+### Step 5b: Tenant API Key Proxy Routes (Required)
+
+After backend image v40+, six public auth endpoints (`register`, `login`, `request-password-reset`, `reset-password`, `verify-email`, `check-verification-token`) require an `X-Tenant-Api-Key` header that **must live server-side**. This means scaffolded apps need backend proxy routes for these flows — the browser cannot call Aegis directly for them.
+
+Generate from `references/tenant-api-key-templates.md`:
+
+- `lib/serverAuthClient.ts` — server-side `AuthClient` factory configured with `AEGIS_TENANT_API_KEY` and `AEGIS_SITE_ID` from env.
+- `app/api/frontend/auth/register/route.ts`
+- `app/api/frontend/auth/login/route.ts`
+- `app/api/frontend/auth/request-password-reset/route.ts`
+- `app/api/frontend/auth/reset-password/route.ts`
+- `app/api/frontend/auth/verify-email/route.ts`
+- `app/api/frontend/auth/check-verification-token/route.ts`
+- `browserAuthProxy` helper in `lib/browserClient.ts` — auth pages call this instead of the singleton `AuthClient` for the gated endpoints.
+
+**Ask the user:** "Do you have a tenant API key for this site (from the Aegis admin dashboard)?" If yes, set `AEGIS_TENANT_API_KEY` in `.env.local`. If no, direct them to Aegis admin → Site → Settings → Tenant API Key. The site's `id` becomes `AEGIS_SITE_ID`.
+
+The auth pages (Step 6) call `browserAuthProxy.*` for the six gated endpoints; the singleton `AuthClient` from `auth-templates.md` is still used for unprotected calls (`getSiteByDomain`, `me`, `change-password`, `logout`, `refresh`).
 
 ## Step 6: Create Auth Pages
 
@@ -326,6 +351,7 @@ All template code is organized in reference files for progressive loading:
 - **`references/config-templates.md`** - package.json, next.config.ts, tsconfig.json, tailwind, postcss, .env
 - **`references/i18n-templates.md`** - Routing, request config, navigation, translations (en.json)
 - **`references/auth-templates.md`** - browserClient.ts, useAuth.ts
+- **`references/tenant-api-key-templates.md`** - 6 backend proxy routes for gated public auth endpoints, server-side AuthClient helper, browserAuthProxy
 - **`references/auth-page-templates.md`** - All 6 authentication pages
 - **`references/component-templates.md`** - AuthCTA, LanguageSwitcher, layouts
 - **`references/page-templates.md`** - Dashboard, home page
