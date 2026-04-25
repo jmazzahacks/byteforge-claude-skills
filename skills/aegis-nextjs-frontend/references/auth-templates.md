@@ -18,6 +18,13 @@ The `browserClient.ts` uses a **singleton AuthClient** that persists tokens in m
 - Login page uses `initAuthClientFromLogin()` to set up the singleton after successful login
 - `clearAuthClient()` is the single source of truth for clearing all auth state
 
+## Browser-vs-Backend Call Split
+
+After Aegis backend v40+, six public auth endpoints are gated by `X-Tenant-Api-Key`. Browser code cannot call these directly; the scaffold ships a `browserAuthProxy` shim that posts to local `/api/frontend/auth/*` proxy routes (see `tenant-api-key-templates.md`).
+
+- **Use `browserAuthProxy.*`** for: `login`, `register`, `requestPasswordReset`, `resetPassword`, `verifyEmail`, `checkVerificationToken`.
+- **Use `getAuthClient()`** for: `getSiteByDomain` (public bootstrap), `me`, `changePassword`, `logout`, `refreshAuthToken`, `confirmEmailChange` (Bearer-token gated, unchanged).
+
 ---
 
 ## lib/browserClient.ts
@@ -66,14 +73,6 @@ export function getAuthClient(): AuthClient {
   }
 
   return singleton;
-}
-
-/**
- * Returns a fresh AuthClient with a specific siteId (used on login page before we have tokens).
- * Does NOT affect the singleton.
- */
-export function getAuthClientForSite(siteId: number): AuthClient {
-  return new AuthClient({ apiUrl: AEGIS_API_URL, siteId, autoRefresh: false });
 }
 
 /**
@@ -160,6 +159,57 @@ export function clearAuthClient(): void {
 export function getSiteDomain(): string {
   return SITE_DOMAIN;
 }
+
+/**
+ * Proxy shim for the six gated public auth endpoints. After Aegis backend v40+
+ * these endpoints require an X-Tenant-Api-Key header that must live server-side
+ * (see references/tenant-api-key-templates.md). The browser calls our local
+ * /api/frontend/auth/* routes; the server attaches the header and forwards to
+ * Aegis. Auth pages should call browserAuthProxy.* for these methods, not the
+ * singleton AuthClient.
+ */
+type ProxyResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string; statusCode: number };
+
+async function postProxy<T>(path: string, body: unknown): Promise<ProxyResult<T>> {
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (response.ok) {
+      return { success: true, data: data as T };
+    }
+    return { success: false, error: data.error || 'Unknown error', statusCode: response.status };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error',
+      statusCode: 0,
+    };
+  }
+}
+
+export const browserAuthProxy = {
+  register: (email: string, password?: string) =>
+    postProxy('/api/frontend/auth/register', { email, password }),
+  login: (email: string, password: string) =>
+    postProxy<LoginResponse>('/api/frontend/auth/login', { email, password }),
+  requestPasswordReset: (email: string) =>
+    postProxy('/api/frontend/auth/request-password-reset', { email }),
+  resetPassword: (token: string, newPassword: string) =>
+    postProxy('/api/frontend/auth/reset-password', { token, new_password: newPassword }),
+  verifyEmail: (token: string, password?: string) =>
+    postProxy('/api/frontend/auth/verify-email', { token, password }),
+  checkVerificationToken: (token: string) =>
+    postProxy<{ password_required: boolean; email: string }>(
+      '/api/frontend/auth/check-verification-token',
+      { token },
+    ),
+};
 
 export { AuthClient };
 export type { LoginResponse };

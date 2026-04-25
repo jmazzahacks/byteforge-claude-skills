@@ -37,7 +37,7 @@ Split the project name at a natural boundary: the first word or prefix in `--for
 
 ## 1. app/[locale]/login/page.tsx
 
-Login form with email/password. Looks up the site via `getSiteDomain()` and `getAuthClient().getSiteByDomain()`. On success, calls `initAuthClientFromLogin()` to store tokens in localStorage and initialize the singleton AuthClient, then redirects to `/dashboard`. Includes forgot password link. Uses Suspense wrapper.
+Login form with email/password. Looks up the site via `getSiteDomain()` and `getAuthClient().getSiteByDomain()` (the public lookup is not gated). Calls `browserAuthProxy.login()` which proxies to `/api/frontend/auth/login` (server attaches the tenant API key). On success, calls `initAuthClientFromLogin()` to store tokens in localStorage and initialize the singleton AuthClient, then redirects to `/dashboard`. Includes forgot password link. Uses Suspense wrapper.
 
 Status states: `idle`, `loading`, `success`, `error`.
 
@@ -48,7 +48,7 @@ import { Suspense, useEffect, useState, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { Link } from '@/i18n/navigation';
-import { getAuthClient, getAuthClientForSite, getSiteDomain, initAuthClientFromLogin } from '@/lib/browserClient';
+import { browserAuthProxy, getAuthClient, getSiteDomain, initAuthClientFromLogin } from '@/lib/browserClient';
 
 interface Site {
   id: number;
@@ -103,8 +103,7 @@ function LoginContent() {
     setStatus('loading');
     setMessage(t('signingIn'));
 
-    const client = getAuthClientForSite(site.id);
-    const result = await client.login(email, password);
+    const result = await browserAuthProxy.login(email, password);
 
     if (result.success && result.data) {
       initAuthClientFromLogin(result.data, site.id, site.name);
@@ -327,7 +326,7 @@ export default function LoginPage() {
 
 ## 2. app/[locale]/verify-email/page.tsx
 
-Email verification page. Reads `?token=` from URL. Calls `getAuthClient().checkVerificationToken(token)` to determine if a password is required. If password is required, shows password + confirm password form. If not, shows a simple verify button. On success, redirects to `/login`. Uses Suspense wrapper.
+Email verification page. Reads `?token=` from URL. Calls `browserAuthProxy.checkVerificationToken(token)` (proxies to `/api/frontend/auth/check-verification-token`) to determine if a password is required. If password is required, shows password + confirm password form. If not, shows a simple verify button. On success, calls `browserAuthProxy.verifyEmail(token, password?)` and redirects to `/login`. Uses Suspense wrapper.
 
 Status states: `checking`, `idle`, `loading`, `success`, `error`.
 
@@ -338,7 +337,7 @@ import { Suspense, useEffect, useState, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter, Link } from '@/i18n/navigation';
 import { useSearchParams } from 'next/navigation';
-import { getAuthClient } from '@/lib/browserClient';
+import { browserAuthProxy } from '@/lib/browserClient';
 
 type VerifyStatus = 'checking' | 'idle' | 'loading' | 'success' | 'error';
 
@@ -370,8 +369,7 @@ function VerifyContent() {
     }
 
     const checkToken = async () => {
-      const client = getAuthClient();
-      const result = await client.checkVerificationToken(token);
+      const result = await browserAuthProxy.checkVerificationToken(token);
 
       if (result.success && result.data) {
         setTokenInfo({
@@ -404,9 +402,8 @@ function VerifyContent() {
     setStatus('loading');
     setMessage(t('verifying'));
 
-    const client = getAuthClient();
     const passwordToSend = tokenInfo?.passwordRequired ? password : undefined;
-    const result = await client.verifyEmail(token, passwordToSend);
+    const result = await browserAuthProxy.verifyEmail(token, passwordToSend);
 
     if (result.success && result.data) {
       setStatus('success');
@@ -636,7 +633,7 @@ export default function VerifyPage() {
 
 ## 3. app/[locale]/forgot-password/page.tsx
 
-Forgot password page. Looks up the site via `getSiteDomain()` and `getAuthClient().getSiteByDomain()`. Calls `getAuthClient().requestPasswordReset(email, site.id)`. Always shows success message regardless of whether the email exists (security best practice). Uses Suspense wrapper.
+Forgot password page. Looks up the site via `getSiteDomain()` and `getAuthClient().getSiteByDomain()` (the public lookup is not gated). Calls `browserAuthProxy.requestPasswordReset(email)` which proxies to `/api/frontend/auth/request-password-reset` (server attaches the tenant API key and supplies `site_id` from env). Always shows success message regardless of whether the email exists (security best practice). Uses Suspense wrapper.
 
 Status states: `idle`, `loading`, `success`, `error`.
 
@@ -646,7 +643,7 @@ Status states: `idle`, `loading`, `success`, `error`.
 import { Suspense, useEffect, useState, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
-import { getAuthClient, getSiteDomain } from '@/lib/browserClient';
+import { browserAuthProxy, getAuthClient, getSiteDomain } from '@/lib/browserClient';
 
 interface Site {
   id: number;
@@ -691,8 +688,7 @@ function ForgotPasswordContent() {
     setStatus('loading');
     setMessage(t('sending'));
 
-    const client = getAuthClient();
-    const result = await client.requestPasswordReset(email, site.id);
+    const result = await browserAuthProxy.requestPasswordReset(email);
 
     // Always show success for security (don't reveal if email exists)
     if (result.success) {
@@ -896,7 +892,7 @@ export default function ForgotPasswordPage() {
 
 ## 4. app/[locale]/reset-password/page.tsx
 
-Reset password page. Reads `?token=` from URL. Shows new password + confirm password form. Calls `getAuthClient().resetPassword(token, password)`. On success, redirects to `/login`. Uses Suspense wrapper.
+Reset password page. Reads `?token=` from URL. Shows new password + confirm password form. Calls `browserAuthProxy.resetPassword(token, password)` which proxies to `/api/frontend/auth/reset-password` (server attaches the tenant API key and supplies `site_id` from env). On success, redirects to `/login`. Uses Suspense wrapper.
 
 Status states: `idle`, `loading`, `success`, `error`.
 
@@ -907,7 +903,7 @@ import { Suspense, useState, FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter, Link } from '@/i18n/navigation';
 import { useSearchParams } from 'next/navigation';
-import { getAuthClient } from '@/lib/browserClient';
+import { browserAuthProxy } from '@/lib/browserClient';
 
 type ResetPasswordStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -968,8 +964,7 @@ function ResetPasswordContent() {
     setStatus('loading');
     setMessage(t('resetting'));
 
-    const client = getAuthClient();
-    const result = await client.resetPassword(token, password);
+    const result = await browserAuthProxy.resetPassword(token, password);
 
     if (result.success && result.data) {
       setStatus('success');
@@ -1486,13 +1481,20 @@ All auth pages use CSS classes defined in the design system (`globals.css`):
 
 ## Auth Client Methods Used
 
-- `getAuthClient()` -- Creates an AuthClient without siteId (used for site lookup and token operations)
-- `getAuthClientForSite(siteId)` -- Creates an AuthClient with siteId (used for login)
+The browser hits two surfaces: the singleton `AuthClient` from `getAuthClient()` (for unprotected and Bearer-token-gated endpoints), and `browserAuthProxy.*` (for the six tenant-key-gated endpoints, which the local Next.js routes proxy to Aegis).
+
+**Direct via `getAuthClient()` / singleton:**
+
+- `getAuthClient()` -- Returns the singleton AuthClient, hydrated from localStorage
 - `getSiteDomain()` -- Returns the configured site domain from env
-- `client.getSiteByDomain(domain)` -- Looks up site info by domain
-- `client.login(email, password)` -- Authenticates and returns tokens
-- `client.checkVerificationToken(token)` -- Checks if token is valid and if password is required
-- `client.verifyEmail(token, password?)` -- Verifies email, optionally setting password
-- `client.requestPasswordReset(email, siteId)` -- Requests a password reset email
-- `client.resetPassword(token, password)` -- Resets password using token
-- `client.confirmEmailChange(token)` -- Confirms an email change
+- `client.getSiteByDomain(domain)` -- Looks up site info by domain (public, not gated)
+- `client.confirmEmailChange(token)` -- Confirms an email change (Bearer-token gated)
+
+**Via `browserAuthProxy` (proxies to `/api/frontend/auth/*`):**
+
+- `browserAuthProxy.login(email, password)` -- Authenticates and returns tokens
+- `browserAuthProxy.register(email, password?)` -- Registers a new user
+- `browserAuthProxy.checkVerificationToken(token)` -- Checks if token is valid and if password is required
+- `browserAuthProxy.verifyEmail(token, password?)` -- Verifies email, optionally setting password
+- `browserAuthProxy.requestPasswordReset(email)` -- Requests a password reset email (server supplies `site_id` from env)
+- `browserAuthProxy.resetPassword(token, password)` -- Resets password using token (server supplies `site_id` from env)

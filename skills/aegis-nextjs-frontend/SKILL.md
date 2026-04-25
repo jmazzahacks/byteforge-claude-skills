@@ -135,7 +135,7 @@ These files are identical across projects. No placeholder substitution needed.
 
 Generate files from `references/auth-templates.md`:
 
-- `lib/browserClient.ts` - Singleton AuthClient that persists tokens in memory and syncs to localStorage. Includes `initAuthClientFromLogin()`, `refreshAuthTokens()`, `isTokenExpired()`, and `clearAuthClient()` for centralized token management.
+- `lib/browserClient.ts` - Singleton AuthClient that persists tokens in memory and syncs to localStorage. Includes `initAuthClientFromLogin()`, `refreshAuthTokens()`, `isTokenExpired()`, `clearAuthClient()`, and the `browserAuthProxy` shim that posts to the local `/api/frontend/auth/*` proxy routes (used by auth pages for the six tenant-key-gated endpoints).
 - `lib/useAuth.ts` - React hook that reads auth state from localStorage, proactively refreshes tokens (5-minute buffer, 60-second check interval), and auto-logs out on refresh failure.
 
 These files are identical across projects except for the default env variable values (`{aegis_api_url}`, `{site_domain}`).
@@ -153,7 +153,7 @@ Generate from `references/tenant-api-key-templates.md`:
 - `app/api/frontend/auth/reset-password/route.ts`
 - `app/api/frontend/auth/verify-email/route.ts`
 - `app/api/frontend/auth/check-verification-token/route.ts`
-- `browserAuthProxy` helper in `lib/browserClient.ts` — auth pages call this instead of the singleton `AuthClient` for the gated endpoints.
+- (The `browserAuthProxy` helper is already inlined in `lib/browserClient.ts` from Step 5 — auth pages call it instead of the singleton `AuthClient` for the gated endpoints.)
 
 **Ask the user:** "Do you have a tenant API key for this site (from the Aegis admin dashboard)?" If yes, set `AEGIS_TENANT_API_KEY` in `.env.local`. If no, direct them to Aegis admin → Site → Settings → Tenant API Key. The site's `id` becomes `AEGIS_SITE_ID`.
 
