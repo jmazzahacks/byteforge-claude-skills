@@ -10,7 +10,7 @@ A skill that provides a standardized pattern for setting up PostgreSQL databases
 
 **What it creates:**
 - `database/schema.sql` - SQL schema definitions
-- `dev_scripts/setup_database.py` - Python setup script with test DB support
+- `dev_scripts/setup_database.py` - Python setup script with `load_dotenv` support
 - Project-specific environment variable naming
 - Idempotent operations (safe to run multiple times)
 
@@ -18,9 +18,9 @@ A skill that provides a standardized pattern for setting up PostgreSQL databases
 - ✅ Parameterized project naming (not hardcoded)
 - ✅ Unix timestamp convention for dates (BIGINT, not TIMESTAMP)
 - ✅ UUID primary keys with `gen_random_uuid()`
-- ✅ Test database support (`--test-db` flag)
 - ✅ Proper permissions and user creation
 - ✅ Connection pooling pattern with ThreadedConnectionPool
+- ✅ Stale-connection-safe driver with retry on disconnect
 - ✅ RealDictCursor for easy dict conversion
 
 **Design Principles:**
@@ -28,8 +28,7 @@ A skill that provides a standardized pattern for setting up PostgreSQL databases
 2. **UUID Primary Keys** - Better for distributed systems
 3. **Idempotent Operations** - `CREATE TABLE IF NOT EXISTS`, safe to re-run
 4. **Separation of Concerns** - Schema in SQL, setup logic in Python
-5. **Test Database Support** - Easy isolated testing with `--test-db`
-6. **No Hardcoded Credentials** - Everything via environment variables
+5. **No Hardcoded Credentials** - Everything via environment variables
 
 [View full postgres-setup documentation →](./skills/postgres-setup/SKILL.md)
 
@@ -146,6 +145,110 @@ A skill that provides a production-ready Docker deployment pattern for Flask app
 8. **Environment Configuration** - example.env pattern with .env gitignored
 
 [View full flask-docker-deployment documentation →](./skills/flask-docker-deployment/SKILL.md)
+
+---
+
+### byteforge-loki-logging
+
+A skill that integrates Grafana Loki logging into Python and Flask applications via the `byteforge-loki-logging` library — structured JSON logs, asynchronous shipping, and graceful console fallback.
+
+**What it creates:**
+- `requirements.txt` entry for `byteforge-loki-logging`
+- `configure_logging()` call wired into the main application file
+- Docker Compose volume mount for the Loki CA certificate
+- Environment variable documentation for all Loki settings
+
+**Features:**
+- ✅ Structured JSON logging with consistent fields
+- ✅ Asynchronous Loki shipping (never blocks the request path)
+- ✅ Graceful console fallback when Loki is unreachable
+- ✅ Standardized `application` label for cross-service Loki queries
+- ✅ TLS via private CA certificate
+- ✅ `DEBUG_LOCAL` toggle for console-only local development
+- ✅ Multiprocessing-safe (handles fork() correctly)
+
+**Design Principles:**
+1. **Structured JSON** - Easier to query and filter in Loki
+2. **Async Shipping** - Logging never blocks application code
+3. **Graceful Fallback** - Console output if Loki is unreachable
+4. **Single Convention** - All services use `application` as the label name
+5. **Local-Dev Friendly** - `DEBUG_LOCAL` removes the Loki dependency in dev
+
+[View full byteforge-loki-logging documentation →](./skills/byteforge-loki-logging/SKILL.md)
+
+---
+
+### aegis-nextjs-frontend
+
+A skill that scaffolds a complete Next.js 16 frontend integrated with ByteForge Aegis authentication, internationalization (next-intl), Tailwind CSS v4, and Docker deployment. The generated project ships with login, email verification, password reset, and a protected dashboard out of the box.
+
+**What it creates:**
+- Next.js 16 App Router project with `[locale]` dynamic segments
+- Full auth flow — login, email verification, password reset, email change confirmation, welcome
+- Protected dashboard with redirect-on-unauthenticated
+- Internationalization via next-intl (English, easily extensible)
+- Singleton `browserClient` AuthClient with proactive token refresh
+- `useAuth` React hook with auto-logout on refresh failure
+- Server-side `/api/frontend/auth/*` proxy routes for Aegis's tenant-key-gated endpoints
+- Reverse-proxy-safe i18n middleware with Host-header fallback
+- Multi-stage Dockerfile with standalone output and `build-publish.sh`
+- `/api/health` endpoint and Loki logging integration
+- Aegis user-verified webhook reference implementation
+
+**Features:**
+- ✅ Next.js 16 App Router with i18n by default
+- ✅ Full ByteForge Aegis auth flow (register, login, verify, reset)
+- ✅ Server-side `X-Tenant-Api-Key` proxy (key never reaches the browser)
+- ✅ `/api/auth/me` bearer-token introspection helpers (TS + Flask)
+- ✅ Proactive token refresh with 5-minute buffer
+- ✅ Tailwind CSS v4 design system with light/dark mode
+- ✅ Production-ready Dockerfile with standalone output
+- ✅ Reverse-proxy header contract documented (`X-Forwarded-*`)
+- ✅ Webhook provisioning reference implementation
+- ✅ Loki structured logging out of the box
+
+**Design Principles:**
+1. **Server-Side Secrets** - Tenant API key lives in env, never in the browser bundle
+2. **Backend-Proxy Pattern** - Browser calls local proxy routes that forward to Aegis with the tenant key attached
+3. **Proactive Token Refresh** - 5-minute buffer prevents mid-session expiry
+4. **i18n by Default** - Every route is locale-prefixed from day one
+5. **Reverse-Proxy Safe** - `proxy.ts` rewrites malformed redirect Locations when upstream misconfigures `X-Forwarded-*`
+6. **Production-Ready Out of Box** - Health check, structured logging, standalone Docker output
+
+[View full aegis-nextjs-frontend documentation →](./skills/aegis-nextjs-frontend/SKILL.md)
+
+---
+
+### mcp-docker-deployment
+
+A skill that containerizes Python MCP (Model Context Protocol) servers for remote deployment, supporting both FastMCP and the low-level SDK with SSE or streamable-http transport.
+
+**What it creates:**
+- Multi-stage Dockerfile (Python 3.13-slim, non-root user)
+- `build-publish.sh` with automated versioning and registry publishing
+- `docker-compose.yaml` example with environment configuration
+- Optional nginx reverse proxy config tuned for HTTPS and SSE streaming
+- `example.env` for environment variables
+- `.dockerignore`
+
+**Features:**
+- ✅ Supports both FastMCP and low-level `mcp.server.Server` SDK
+- ✅ SSE and streamable-http transports (different endpoints, handled correctly)
+- ✅ Automated `VERSION` file management
+- ✅ Non-root container user
+- ✅ Private Git dependency support via `CR_PAT` build arg
+- ✅ Dual tagging (version + `latest`)
+- ✅ nginx config sized for SSE streaming (long timeouts, no buffering)
+- ✅ Compatible with GHCR, Docker Hub, ECR, or any OCI registry
+
+**Design Principles:**
+1. **Transport-Aware** - SSE and streamable-http have different endpoints; the skill emits the correct one
+2. **Reverse-Proxy Friendly** - nginx config tuned for SSE (long timeouts, disabled buffering)
+3. **Automated Versioning** - Same `VERSION` pattern as `flask-docker-deployment`
+4. **Security First** - Non-root user, slim base image
+5. **Registry Agnostic** - Works with any OCI-compatible registry
+
+[View full mcp-docker-deployment documentation →](./skills/mcp-docker-deployment/SKILL.md)
 
 ---
 
@@ -272,17 +375,13 @@ byteforge-claude-skills/
 │   └── marketplace.json
 ├── skills/                      # All skills
 │   ├── postgres-setup/
-│   │   └── SKILL.md
 │   ├── python-lib-setup/
-│   │   └── SKILL.md
 │   ├── flask-smorest-api/
-│   │   └── SKILL.md
 │   ├── flask-docker-deployment/
-│   │   └── SKILL.md
 │   ├── byteforge-loki-logging/
-│   │   └── SKILL.md
-│   ├── python-project-scaffold/
-│   │   └── SKILL.md
+│   ├── aegis-nextjs-frontend/
+│   ├── mcp-docker-deployment/
+│   └── python-project-scaffold/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```
