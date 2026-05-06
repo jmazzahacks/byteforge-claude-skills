@@ -56,11 +56,39 @@ export const { Link, redirect, usePathname, useRouter, getPathname } =
 
 Middleware that handles locale detection and routing. This file goes in the project root (e.g., `src/proxy.ts` or `proxy.ts` depending on project structure).
 
+The wrapper around `createMiddleware(routing)` defends against an upstream-proxy footgun: when a reverse proxy forwards `Host` and `X-Forwarded-Proto` but **not** `X-Forwarded-Host` / `X-Forwarded-Port`, Next.js infers the port from the local TCP listener (3000) and emits broken absolute redirects like `https://your-host:3000/en`. The wrapper checks the redirect's host against the inbound `Host` header and, if they differ, rewrites the host to match. No-op when the proxy is configured correctly. See `docker-templates.md` for the proxy header contract you should still satisfy upstream — this fallback is a safety net, not a substitute.
+
 ```typescript
 import createMiddleware from 'next-intl/middleware';
+import { NextRequest, NextResponse } from 'next/server';
 import { routing } from './i18n/routing';
 
-export default createMiddleware(routing);
+const intlMiddleware = createMiddleware(routing);
+
+export default function middleware(request: NextRequest): NextResponse {
+  const response = intlMiddleware(request);
+  const location = response.headers.get('location');
+  if (!location) {
+    return response;
+  }
+
+  const hostHeader = request.headers.get('host');
+  if (!hostHeader) {
+    return response;
+  }
+
+  try {
+    const url = new URL(location);
+    if (url.host !== hostHeader) {
+      url.host = hostHeader;
+      response.headers.set('location', url.toString());
+    }
+  } catch {
+    // Relative Location — nothing to rewrite.
+  }
+
+  return response;
+}
 
 export const config = {
   matcher: ['/((?!api|_next|.*\\..*).*)']

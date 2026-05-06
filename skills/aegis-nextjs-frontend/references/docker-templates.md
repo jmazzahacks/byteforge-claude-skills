@@ -132,6 +132,60 @@ services:
 
 ---
 
+## Reverse Proxy Contract
+
+These containers must run behind a reverse proxy that forwards three headers — without them, the next-intl middleware emits broken absolute redirects (e.g., a 307 from `/` to `https://your-host:3000/en` containing the local listener port instead of the public port):
+
+| Header | Why it matters |
+|--------|----------------|
+| `X-Forwarded-Proto` | Sets the public scheme on `Location` headers (so they use `https://`, not `http://`). |
+| `X-Forwarded-Host`  | Sets the public hostname when the inbound `Host` header is rewritten by the proxy. |
+| `X-Forwarded-Port`  | Sets the public port — **without this, Next.js falls back to the local listener port (`3000`).** |
+
+The scaffolded `proxy.ts` ships a defensive fallback that rewrites a malformed redirect's host using the inbound `Host` header (see `i18n-templates.md`). That fallback covers misconfigured proxies that still forward `Host` correctly, plus direct-access development like `docker run -p 3000:3000`. It is **not** a substitute for setting the `X-Forwarded-*` headers — fix the proxy.
+
+### nginx
+
+```nginx
+location / {
+    proxy_pass http://{project-name}-frontend:3000;
+
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+    proxy_set_header X-Forwarded-Port  $server_port;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+
+    # Required for Next.js streaming responses and HMR in dev.
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+### Caddy
+
+```caddy
+example.com {
+    reverse_proxy {project-name}-frontend:3000 {
+        # Caddy sets X-Forwarded-Proto / X-Forwarded-Host / X-Forwarded-For
+        # automatically. X-Forwarded-Port must be added explicitly.
+        header_up X-Forwarded-Port {server_port}
+    }
+}
+```
+
+### Symptom Reference
+
+| 307 `Location` looks like | Likely cause |
+|---------------------------|--------------|
+| `https://your-host:3000/en` | Missing `X-Forwarded-Port` (Next.js fell back to listener port). |
+| `http://your-host/en` (when site is HTTPS) | Missing `X-Forwarded-Proto`. |
+| Redirects to a different hostname than the user requested | Missing `X-Forwarded-Host` and inbound `Host` was rewritten. |
+
+---
+
 ## Health Check API Route
 
 **File:** `app/api/health/route.ts`

@@ -127,7 +127,7 @@ Generate files from `references/i18n-templates.md`:
 - `i18n/routing.ts` - Locale definitions (start with `['en']`, add more as needed)
 - `i18n/request.ts` - Server-side message loading
 - `i18n/navigation.ts` - Locale-aware `Link`, `useRouter`, `usePathname`
-- `proxy.ts` - next-intl middleware (matches all paths except `/api`, `/_next`, static files)
+- `proxy.ts` - next-intl middleware wrapped with a defensive Host-header fallback that fixes redirect URLs when the upstream proxy doesn't forward `X-Forwarded-Host` / `X-Forwarded-Port`. Matches all paths except `/api`, `/_next`, static files. See `docker-templates.md` for the upstream proxy header contract.
 
 These files are identical across projects. No placeholder substitution needed.
 
