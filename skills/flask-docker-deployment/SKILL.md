@@ -38,7 +38,7 @@ Before using this skill, ensure:
 
 1. **"What is your Flask application entry point?"**
    - Format: `{module_name}:{app_variable}`
-   - Example: `hyperopt_daemon:app` or `api_server:create_app()`
+   - Example: `flask_app:app` or `api_server:create_app()`
 
 2. **"What port does your Flask app use?"**
    - Pick a random port above 5000 (e.g., 5678, 6100, 7200) — avoid well-known ports
@@ -109,7 +109,7 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} {module}:{app}
 **CRITICAL Replacements:**
 - `{port}` → Default application port (e.g., 5678). This is the default value for the `PORT` env var — it can be overridden at runtime with `-e PORT=XXXX`
 - `{workers}` → Number of workers (e.g., 4, or 1 for background jobs)
-- `{module}` → Python module name (e.g., hyperopt_daemon)
+- `{module}` → Python module name (e.g., flask_app)
 - `{app}` → App variable name (e.g., app or create_app())
 
 **If NO private dependencies**, remove these lines:
@@ -197,7 +197,7 @@ echo "Updated $VERSION_FILE to version $VERSION"
 ```
 
 **CRITICAL Replacements:**
-- `{registry_url}` → Full container registry URL (e.g., `ghcr.io/mazza-vc/hyperopt-server`)
+- `{registry_url}` → Full container registry URL (e.g., `ghcr.io/{org}/my-flask-app`)
 
 **If NO private dependencies**, remove `--build-arg CR_PAT=$CR_PAT`:
 ```bash
@@ -236,7 +236,7 @@ LOG_LEVEL=INFO
 **CRITICAL**: Replace:
 - `{port}` → Application port (e.g., 5678)
 - `{PROJECT_NAME}` → Uppercase project name (e.g., "HYPEROPT_SERVER")
-- `{project_name}` → Snake case project name (e.g., "hyperopt_server")
+- `{project_name}` → Snake case project name (e.g., "my_flask_app")
 
 **Note:** Remove CR_PAT if you don't have private dependencies.
 
@@ -532,13 +532,13 @@ rm VERSION
 
 ## Example: Complete Workflow
 
-**User:** "Dockerize my Flask hyperopt server"
+**User:** "Dockerize my Flask app"
 
 **Claude asks:**
-- Entry point? → `hyperopt_daemon:app`
+- Entry point? → `flask_app:app`
 - Port? → `5678`
-- Registry? → `ghcr.io/mazza-vc/hyperopt-server`
-- Private deps? → `yes` (arcana-core)
+- Registry? → `ghcr.io/{org}/my-flask-app`
+- Private deps? → `yes` (`my-private-lib`)
 - Workers? → `1` (background job processor)
 
 **Claude creates:**
@@ -554,8 +554,8 @@ export CR_PAT=ghp_abc123
 ```
 
 **Result:**
-- ✅ Builds `ghcr.io/mazza-vc/hyperopt-server:1`
-- ✅ Tags as `ghcr.io/mazza-vc/hyperopt-server:latest`
+- ✅ Builds `ghcr.io/{org}/my-flask-app:1`
+- ✅ Tags as `ghcr.io/{org}/my-flask-app:latest`
 - ✅ Pushes both tags
 - ✅ Updates VERSION to `1`
 
