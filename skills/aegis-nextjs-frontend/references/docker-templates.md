@@ -115,6 +115,13 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # Server-side Aegis config (NOT baked into the client bundle).
+      # The /api/frontend/auth/* proxy routes use these to call Aegis on
+      # behalf of the browser. AEGIS_TENANT_API_KEY must never be exposed
+      # to the browser — keep these unprefixed (no NEXT_PUBLIC_).
+      - AEGIS_API_URL=${AEGIS_API_URL}
+      - AEGIS_TENANT_API_KEY=${AEGIS_TENANT_API_KEY}
+      - AEGIS_SITE_ID=${AEGIS_SITE_ID}
       - DEBUG_LOCAL=false
       - LOKI_URL=${LOKI_URL}
       - LOKI_USER=${LOKI_USER}
@@ -192,6 +199,10 @@ Without this, the `.next/standalone` directory will not be generated and Stage 3
 ### NEXT_PUBLIC_* Variables Are Baked at Build Time
 
 `NEXT_PUBLIC_*` environment variables are embedded into the JavaScript bundle at build time. They **cannot** be changed at runtime. This is why they are declared as `ARG` values in Stage 2 rather than `ENV` values in Stage 3. If you need to change these values, you must rebuild the Docker image.
+
+### Server-Side Aegis Variables Are Runtime, Not Build-Time
+
+`AEGIS_API_URL`, `AEGIS_TENANT_API_KEY`, and `AEGIS_SITE_ID` are **runtime** env vars. They are read by the `/api/frontend/auth/*` proxy routes on the server side — not baked into the client bundle. Do **not** prefix them with `NEXT_PUBLIC_` (that would publish the tenant key to every browser, defeating the entire gate). Pass them through `docker-compose` `environment:` or your orchestrator's secret-management instead. Changing them does not require a rebuild — just restart the container.
 
 ### Build Command
 

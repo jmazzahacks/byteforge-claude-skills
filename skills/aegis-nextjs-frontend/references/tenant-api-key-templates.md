@@ -330,6 +330,96 @@ Auth pages (`login/page.tsx`, `verify-email/page.tsx`, etc.) call `browserAuthPr
 
 ---
 
+## 4b. Alternative: Proxy Lives in a Sibling Backend (No Next.js API Routes)
+
+If the project **already has a separate backend** (Flask, FastAPI, Express, etc.) that the frontend calls for non-auth business logic, host the 6 proxy endpoints there instead of in Next.js API routes. This avoids duplicating an API surface across two services. Reference implementation: `hivemake.ai` (Flask `hivemake-server` at `api.hivemake.ai`).
+
+### When to use this variant
+
+- The tenant has a backend that's already calling Aegis for other reasons (e.g., validating bearer tokens via `/api/auth/me`, see `backend-auth-templates.md`).
+- The frontend already targets that backend for everything else; adding 6 thin proxy routes is cheaper than introducing a Next.js API layer.
+- The backend can hold `AEGIS_TENANT_API_KEY` in its own env and inject it via `byteforge-aegis-client-python` or `byteforge-aegis-client-js`.
+
+### Architecture differences
+
+| | Skill default (Next.js routes) | Sibling-backend variant |
+|---|---|---|
+| Proxy host | `app/api/frontend/auth/*` in this Next.js | `/api/auth/*` in the sibling backend (e.g., `api.example.com`) |
+| Tenant key holder | This Next.js's server-side env | The sibling backend's env |
+| Frontend client | `browserAuthProxy` fetch shim → `/api/frontend/auth/*` | A second `AuthClient` configured with `apiUrl = <backend_url>` |
+| `siteId` exposure | `AEGIS_SITE_ID` server-side | Either same, or baked as `NEXT_PUBLIC_AEGIS_SITE_ID` (site_id alone is not a secret — see note below) |
+
+### Pattern: two AuthClients in the browser
+
+The sibling-backend variant is cleaner because the second `AuthClient` reuses the typed Aegis interface — no fetch shim needed. The sibling backend's proxy routes mirror Aegis's API surface (`/api/auth/login` → forwards to Aegis's `/api/auth/login`).
+
+```typescript
+// lib/browserClient.ts — sibling-backend variant
+import { AuthClient } from 'byteforge-aegis-client-js';
+
+const AEGIS_API_URL = process.env.NEXT_PUBLIC_AEGIS_API_URL!;
+const BACKEND_API_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL!; // e.g. https://api.example.com
+const SITE_ID = parseInt(process.env.NEXT_PUBLIC_AEGIS_SITE_ID!, 10);
+
+let aegisSingleton: AuthClient | null = null;
+let proxySingleton: AuthClient | null = null;
+
+// Used for Bearer-gated calls (refresh, me, logout, confirm-email-change).
+export function getAuthClient(): AuthClient {
+  if (aegisSingleton) return aegisSingleton;
+  aegisSingleton = new AuthClient({ apiUrl: AEGIS_API_URL, siteId: SITE_ID, autoRefresh: false });
+  // ...hydrate tokens from localStorage...
+  return aegisSingleton;
+}
+
+// Used for the 6 tenant-key-gated calls. Backend attaches the tenant key.
+export function getProxyClient(): AuthClient {
+  if (proxySingleton) return proxySingleton;
+  proxySingleton = new AuthClient({ apiUrl: BACKEND_API_URL, siteId: SITE_ID, autoRefresh: false });
+  return proxySingleton;
+}
+```
+
+Auth pages call `getProxyClient().login(email, password)` etc. for the gated endpoints, and `getAuthClient().refreshAuthToken()` etc. for Bearer-gated ones. No `browserAuthProxy` shim, no `app/api/frontend/auth/*` routes.
+
+### Sibling backend (Python/Flask example)
+
+The Flask side uses the Python client's `tenant_api_key` config and exposes thin pass-throughs:
+
+```python
+# lib/aegis.py
+from byteforge_aegis_client import AegisClient, AegisClientConfig
+
+_tenant_client: AegisClient | None = None
+
+def aegis_tenant_client() -> AegisClient:
+    global _tenant_client
+    if _tenant_client is None:
+        _tenant_client = AegisClient(AegisClientConfig(
+            api_url=os.environ['AEGIS_API_URL'],
+            site_id=int(os.environ['AEGIS_SITE_ID']),
+            tenant_api_key=os.environ['AEGIS_TENANT_API_KEY'],
+        ))
+    return _tenant_client
+```
+
+```python
+# blueprints/auth.py — one route per gated Aegis endpoint
+@blp.route('/api/auth/login', methods=['POST'])
+def login():
+    body = request.get_json()
+    result = aegis_tenant_client().login(email=body['email'], password=body['password'])
+    return jsonify(asdict(result)), 200
+```
+
+Other languages: the `byteforge-aegis-client-js` (`>=2.9.0`) and `byteforge-aegis-client-python` (`>=1.3.0`) packages both auto-attach `X-Tenant-Api-Key` when `tenant_api_key` is set on the config — same idea, different language.
+
+### Note on `NEXT_PUBLIC_AEGIS_SITE_ID`
+
+Hivemake bakes `AEGIS_SITE_ID` into the client bundle as `NEXT_PUBLIC_AEGIS_SITE_ID` so the browser can construct the request body. This is **safe** — site_id alone gives a caller no auth power; the gate is the tenant key, which stays server-side. If the frontend already does `getSiteByDomain(NEXT_PUBLIC_SITE_DOMAIN)` to resolve the id at runtime, you don't need this var at all.
+
+---
+
 ## 5. Migration Notes for Existing Scaffolds
 
 If updating an existing scaffold from the old direct-to-Aegis pattern:

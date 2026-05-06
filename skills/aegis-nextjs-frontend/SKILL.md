@@ -157,6 +157,8 @@ Generate from `references/tenant-api-key-templates.md`:
 
 **Ask the user:** "Do you have a tenant API key for this site (from the Aegis admin dashboard)?" If yes, set `AEGIS_TENANT_API_KEY` in `.env.local`. If no, direct them to Aegis admin → Site → Settings → Tenant API Key. The site's `id` becomes `AEGIS_SITE_ID`.
 
+**Also ask:** "Does this project already have a separate backend (Flask, Express, FastAPI, etc.) that the frontend talks to?" If **yes**, host the 6 proxy endpoints in that backend instead of in Next.js API routes — see the "Alternative: Proxy Lives in a Sibling Backend" section in `references/tenant-api-key-templates.md`. Reference implementation: `hivemake.ai`. The Next.js side then uses two `AuthClient` singletons (Aegis-direct + backend-proxy) and skips the `/api/frontend/auth/*` routes and `browserAuthProxy` shim entirely. If **no**, use the default pattern below.
+
 The auth pages (Step 6) call `browserAuthProxy.*` for the six gated endpoints; the singleton `AuthClient` from `auth-templates.md` is still used for unprotected calls (`getSiteByDomain`, `me`, `change-password`, `logout`, `refresh`).
 
 ## Step 6: Create Auth Pages
@@ -218,8 +220,8 @@ Contains all translation keys organized by page: Common, Home, Welcome, Login, V
 
 Generate from `references/docker-templates.md`:
 
-- `Dockerfile` - 3-stage build (deps → builder → runner) with CR_PAT for private GitHub packages
-- `docker-compose.example.yaml` - Service definition with image URL and port mapping
+- `Dockerfile` - 3-stage build (deps → builder → runner) with CR_PAT for private GitHub packages. `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` are baked in as build args (Stage 2 ARG/ENV).
+- `docker-compose.example.yaml` - Service definition with image URL, port mapping, and **server-side runtime env vars** (`AEGIS_API_URL`, `AEGIS_TENANT_API_KEY`, `AEGIS_SITE_ID`) consumed by the `/api/frontend/auth/*` proxy routes. These must NOT be `NEXT_PUBLIC_` — the tenant key must never reach the browser.
 - `app/api/health/route.ts` - Returns JSON with status, service name, and unix timestamp
 
 ## Step 12: Create Build & Publish Script
