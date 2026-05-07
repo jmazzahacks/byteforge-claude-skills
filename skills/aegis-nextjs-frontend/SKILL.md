@@ -341,13 +341,13 @@ If the project also has a Flask backend on the same Loki infrastructure, use **b
 When the frontend talks to a custom backend (Next.js API routes, sibling Flask service, etc.), the backend has two ways to resolve Aegis identities to user records — pick whichever fits the calling pattern:
 
 - **`GET /api/auth/me`** — bearer-token introspection. Use when you receive an `Authorization: Bearer <aegis_token>` from a frontend caller and need to know which user it represents. Available as of Aegis image v39 / TS client `2.8.0` / Python client `1.2.0`.
-- **`GET /api/sites/{site_id}/users/{user_id}`** — tenant-key-gated user lookup by id. Use when an inbound non-Aegis credential (internal API key, stored service identity, cron job) maps to an Aegis `user_id` but no bearer is present, and you need the current `role` for authorization. Available with the post-tenant-key-gate Aegis backend / TS client `2.9.0` (header injection only — typed `getUser` pending) / Python client `1.6.0`.
+- **`GET /api/sites/{site_id}/users/{user_id}`** — tenant-key-gated user lookup by id. Use when an inbound non-Aegis credential (internal API key, stored service identity, cron job) maps to an Aegis `user_id` but no bearer is present, and you need the current `role` for authorization. Available with the post-tenant-key-gate Aegis backend / TS client `2.11.0` / Python client `1.6.0`.
 
 Both return the same standard user shape including `role`. Neither should be called from the frontend itself — login already returns the user, and these endpoints are for backend authz checks.
 
 See `references/backend-auth-templates.md` for drop-in middleware:
 - `/me`: Next.js helper `lib/aegisAuth.ts` and Flask decorator `@aegis_auth_required` with short-TTL token caching.
-- User-lookup: Next.js fetch helper `lib/aegisUserLookup.ts` and a Flask `admin_required` decorator example using `byteforge-aegis-client-python>=1.6.0`'s typed `client.get_user(user_id)`.
+- User-lookup: Next.js helper `lib/aegisUserLookup.ts` (uses TS client `2.11.0`+ typed `client.getUser`) and a Flask `admin_required` decorator example using Python client `1.6.0`+ typed `client.get_user(user_id)`.
 
 ## Additional Resources
 

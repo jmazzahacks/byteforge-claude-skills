@@ -379,59 +379,57 @@ def admin_required(func):
 
 ## Next.js API Route Example (TypeScript)
 
-The TS client (`byteforge-aegis-client-js@2.9.0`) attaches `X-Tenant-Api-Key` automatically when `tenantApiKey` is set in config, but does **not yet** ship a typed `getUser` method (parity with the Python `1.6.0` wrapper is on the roadmap). Until then, use a small fetch helper.
+The TS client (`byteforge-aegis-client-js>=2.11.0`) ships a typed `getUser(userId, siteId?)` method. Pair it with a tenant-key-configured singleton — the same one you'd use for any other server-side Aegis call.
+
+**Requires:** `byteforge-aegis-client-js>=2.11.0`.
 
 **File:** `lib/aegisUserLookup.ts`
 
 ```typescript
+import { AuthClient } from 'byteforge-aegis-client-js';
+import type { User } from 'byteforge-aegis-client-js';
+
 const AEGIS_API_URL = process.env.AEGIS_API_URL!;
 const AEGIS_TENANT_API_KEY = process.env.AEGIS_TENANT_API_KEY!;
 const AEGIS_SITE_ID = parseInt(process.env.AEGIS_SITE_ID!, 10);
 const CACHE_TTL_MS = 30_000;
 
-export interface AegisUser {
-  id: number;
-  site_id: number;
-  email: string;
-  is_verified: boolean;
-  role: string;
-  created_at: number;
-  updated_at: number;
-}
-
 interface CacheEntry {
-  user: AegisUser;
+  user: User;
   expiresAt: number;
 }
 
+let tenantClient: AuthClient | null = null;
 const userCache = new Map<number, CacheEntry>();
 
-export async function getAegisUser(userId: number): Promise<AegisUser | null> {
+function getTenantClient(): AuthClient {
+  if (tenantClient) return tenantClient;
+  tenantClient = new AuthClient({
+    apiUrl: AEGIS_API_URL,
+    siteId: AEGIS_SITE_ID,
+    tenantApiKey: AEGIS_TENANT_API_KEY,
+    autoRefresh: false,
+  });
+  return tenantClient;
+}
+
+export async function getAegisUser(userId: number): Promise<User | null> {
   const cached = userCache.get(userId);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.user;
   }
 
-  const response = await fetch(
-    `${AEGIS_API_URL}/api/sites/${AEGIS_SITE_ID}/users/${userId}`,
-    {
-      method: 'GET',
-      headers: { 'X-Tenant-Api-Key': AEGIS_TENANT_API_KEY },
-      cache: 'no-store',
-    },
-  );
-
-  if (response.status === 401) {
+  const result = await getTenantClient().getUser(userId);
+  if (!result.success) {
     userCache.delete(userId);
-    return null;
-  }
-  if (!response.ok) {
-    throw new Error(`Aegis user lookup failed: ${response.status}`);
+    if (result.statusCode === 401) {
+      return null;
+    }
+    throw new Error(`Aegis user lookup failed: ${result.statusCode} ${result.error}`);
   }
 
-  const user = (await response.json()) as AegisUser;
-  userCache.set(userId, { user, expiresAt: Date.now() + CACHE_TTL_MS });
-  return user;
+  userCache.set(userId, { user: result.data, expiresAt: Date.now() + CACHE_TTL_MS });
+  return result.data;
 }
 ```
 
@@ -491,7 +489,7 @@ If the backend is older than image version 39, `/api/auth/me` returns 404 — up
 | Component | Minimum Version |
 |-----------|----------------|
 | Aegis backend (`byteforge-aegis`) | Image with commit `4508056` or later (post-tenant-key-gate) |
-| TypeScript client (`byteforge-aegis-client-js`) | `2.9.0` (header injection only — typed `getUser` not yet shipped; use the fetch helper above) |
+| TypeScript client (`byteforge-aegis-client-js`) | `2.11.0` (typed `client.getUser(userId)`) |
 | Python client (`byteforge-aegis-client-python`) | `1.6.0` (typed `client.get_user(user_id)`) |
 
 Older backends return 404 for this path — upgrade Aegis before rolling out the user-lookup pattern.
