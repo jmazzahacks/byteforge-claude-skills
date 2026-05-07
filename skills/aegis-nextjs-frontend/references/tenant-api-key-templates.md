@@ -9,6 +9,8 @@ This file documents the **required** backend-proxy pattern for Aegis's gated pub
 - `POST /api/auth/verify-email`
 - `POST /api/auth/check-verification-token`
 
+> **Related — same key, different use case:** `GET /api/sites/{site_id}/users/{user_id}` is also tenant-key-gated, but it's a **server-to-server** lookup for backend authz (resolve a `user_id` to its current `role`). It is not proxied to the browser. See `backend-auth-templates.md` for that pattern.
+
 The header is a per-tenant secret (64-char hex) issued by the Aegis admin dashboard. **It must live server-side in your Next.js deployment**, never in browser-shipped code, because the whole point of the gate is to prevent direct-to-Aegis abuse from automated callers. Browsers are public — anything in browser JS is publishable.
 
 This means the scaffolded Next.js app must:

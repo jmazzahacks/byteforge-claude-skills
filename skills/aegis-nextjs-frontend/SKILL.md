@@ -337,12 +337,17 @@ If the project needs a database, use **postgres-setup** skill.
 ### Loki Logging (Flask backends)
 If the project also has a Flask backend on the same Loki infrastructure, use **byteforge-loki-logging** skill for the Python side. Both skills push to the same Grafana Loki instance and can be queried together using the `application` label.
 
-### Backend Token Validation (`/api/auth/me`)
-When the frontend built with this skill talks to a custom backend (Next.js API routes, a sibling Flask service, etc.), that backend should validate incoming Aegis bearer tokens by forwarding them to `GET /api/auth/me` rather than trusting a client-asserted `user_id`. This is the supported service-to-service auth pattern as of Aegis image version 39 / `byteforge-aegis-client-js@2.8.0` / `byteforge-aegis-client-python@1.2.0`.
+### Backend Aegis Identity Resolution
+When the frontend talks to a custom backend (Next.js API routes, sibling Flask service, etc.), the backend has two ways to resolve Aegis identities to user records — pick whichever fits the calling pattern:
 
-The frontend itself does **not** need to call `/me` — it already has user info from `/api/auth/login`. Use `/me` only on the backend side.
+- **`GET /api/auth/me`** — bearer-token introspection. Use when you receive an `Authorization: Bearer <aegis_token>` from a frontend caller and need to know which user it represents. Available as of Aegis image v39 / TS client `2.8.0` / Python client `1.2.0`.
+- **`GET /api/sites/{site_id}/users/{user_id}`** — tenant-key-gated user lookup by id. Use when an inbound non-Aegis credential (internal API key, stored service identity, cron job) maps to an Aegis `user_id` but no bearer is present, and you need the current `role` for authorization. Available with the post-tenant-key-gate Aegis backend / TS client `2.9.0` (header injection only — typed `getUser` pending) / Python client `1.6.0`.
 
-See `references/backend-auth-templates.md` for drop-in middleware: a Next.js API route helper (`lib/aegisAuth.ts`) and a Flask decorator (`@aegis_auth_required`), both with short-TTL token caching and the 401-failure-mode guidance baked in.
+Both return the same standard user shape including `role`. Neither should be called from the frontend itself — login already returns the user, and these endpoints are for backend authz checks.
+
+See `references/backend-auth-templates.md` for drop-in middleware:
+- `/me`: Next.js helper `lib/aegisAuth.ts` and Flask decorator `@aegis_auth_required` with short-TTL token caching.
+- User-lookup: Next.js fetch helper `lib/aegisUserLookup.ts` and a Flask `admin_required` decorator example using `byteforge-aegis-client-python>=1.6.0`'s typed `client.get_user(user_id)`.
 
 ## Additional Resources
 
@@ -362,4 +367,4 @@ All template code is organized in reference files for progressive loading:
 - **`references/docker-templates.md`** - Dockerfile, docker-compose, health endpoint
 - **`references/build-publish-template.md`** - build-publish.sh script (two tiers: env-sourced and baked-in) with auto-versioning, three-build-arg validation, and public/ directory gotcha
 - **`references/webhook-templates.md`** - Aegis user.verified webhook contract, signature verification, and provisioning pattern
-- **`references/backend-auth-templates.md`** - `/api/auth/me` introspection pattern with Next.js API route helper and Flask decorator for validating Aegis tokens on downstream backends
+- **`references/backend-auth-templates.md`** - Backend Aegis identity resolution: `/api/auth/me` bearer introspection (Next.js helper, Flask decorator) plus `GET /api/sites/{site_id}/users/{user_id}` user-lookup-by-id for non-bearer authz (Next.js fetch helper, Flask `admin_required` example using the typed Python `client.get_user`)
