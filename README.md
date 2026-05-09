@@ -281,6 +281,40 @@ A skill that scaffolds a multi-repo Python workspace with shared models library,
 
 ---
 
+### gatekeeper-nginx-setup
+
+A skill that produces a complete nginx vhost for a ByteForge Gatekeeper deployment behind Cloudflare (Flask backend + Next.js frontend), with the four production-tested traps documented inline so future edits don't accidentally simplify them away.
+
+**What it creates:**
+- HTTP→HTTPS redirect + TLS 443 server block with Cloudflare Origin certificate paths
+- `location /api/` → Flask backend (broad prefix, not per-route)
+- `location /` → Next.js frontend with i18n-safe `X-Forwarded-Host` / `X-Forwarded-Port`
+- `resolver` check + drop-in directive for container or host nginx
+- Optional `/authz` + `/health` + `/metrics` block for external consumers
+- Optional `auth_request` + CORS configuration for protected upstream services
+- Four `curl` smoke tests with an expected-status matrix
+- Symptom→cause→fix failure-decoder table mapped to the trap numbers
+
+**Features:**
+- ✅ Variable-form `proxy_pass` + `resolver` for container-restart resilience
+- ✅ `X-Forwarded-Host` / `X-Forwarded-Port: 443` to prevent `:3000` redirect leaks
+- ✅ Broad `/api/*` prefix block to prevent Cloudflare Error 1000 loops
+- ✅ Cloudflare Origin TLS, HSTS, security headers
+- ✅ 30s upstream timeouts sized for Aegis cold starts
+- ✅ Optional CORS via `auth_request` with the working architecture (no `auth_request_set` traps)
+- ✅ Inline rationale for every load-bearing decision (the Traps section)
+
+**Design Principles:**
+1. **Document the traps inline** — each load-bearing decision has a comment explaining the outage it prevents
+2. **Defer DNS to request time** — the `set $var; proxy_pass http://$var:port;` pattern survives container churn
+3. **Catch-all `/api/`** — never per-route, so new backend endpoints don't accidentally route to the frontend
+4. **Forward all the i18n headers** — `X-Forwarded-Host` and `X-Forwarded-Port: 443` are not optional
+5. **CORS responsibility split** — Gatekeeper enforces the origin allowlist, the upstream emits the headers
+
+[View full gatekeeper-nginx-setup documentation →](./skills/gatekeeper-nginx-setup/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -381,7 +415,8 @@ byteforge-claude-skills/
 │   ├── byteforge-loki-logging/
 │   ├── aegis-nextjs-frontend/
 │   ├── mcp-docker-deployment/
-│   └── python-project-scaffold/
+│   ├── python-project-scaffold/
+│   └── gatekeeper-nginx-setup/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```
