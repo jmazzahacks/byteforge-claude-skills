@@ -416,6 +416,44 @@ def login():
 
 Other languages: the `byteforge-aegis-client-js` (`>=2.9.0`) and `byteforge-aegis-client-python` (`>=1.3.0`) packages both auto-attach `X-Tenant-Api-Key` when `tenant_api_key` is set on the config — same idea, different language.
 
+### Gotcha: the JS AuthClient always sends `site_id` in the body
+
+`byteforge-aegis-client-js` always includes `site_id` in the JSON body for `register`, `login`, `request_password_reset`, `reset_password`, `verify_email`, and `check_verification_token` (it pulls `siteId` from `AuthClientConfig` and adds it to the request payload). Your proxy doesn't *need* the value — the sibling backend uses its env-configured `site_id` via the tenant client — but a strict-validation framework will **reject the call with 422 "Unknown field"** if your input schema doesn't tolerate the extra field.
+
+This bites:
+- **flask-smorest / marshmallow** — default is to raise on unknown fields
+- **FastAPI / pydantic** — when models are configured with `extra="forbid"`
+- **Express + AJV / zod / yup** — when `additionalProperties: false` / `.strict()` is set
+
+**Fix on the proxy side: silently drop unknown fields.**
+
+Marshmallow:
+
+```python
+from marshmallow import EXCLUDE, Schema, fields
+
+class _ProxyRequestSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE  # JS client sends site_id; we ignore it.
+
+class LoginRequestSchema(_ProxyRequestSchema):
+    email = fields.Email(required=True)
+    password = fields.String(required=True)
+```
+
+Pydantic:
+
+```python
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra='ignore')  # default in v2 anyway
+    email: EmailStr
+    password: str
+```
+
+zod / yup: use `.strip()` / non-strict mode (the default for both).
+
+Symptom in the wild: the form-submit flow looks "stuck" — the AuthClient sees `response.ok === false` from a 422 and surfaces the marshmallow `Unknown field` error as a generic `Unknown error` to the React component, so the spinner clears with an unhelpful message. A direct `curl` probe (which doesn't include `site_id`) returns the expected 401 from Aegis, masking the real bug.
+
 ### Note on `NEXT_PUBLIC_AEGIS_SITE_ID`
 
 Hivemake bakes `AEGIS_SITE_ID` into the client bundle as `NEXT_PUBLIC_AEGIS_SITE_ID` so the browser can construct the request body. This is **safe** — site_id alone gives a caller no auth power; the gate is the tenant key, which stays server-side. If the frontend already does `getSiteByDomain(NEXT_PUBLIC_SITE_DOMAIN)` to resolve the id at runtime, you don't need this var at all.
@@ -429,10 +467,11 @@ If updating an existing scaffold from the old direct-to-Aegis pattern:
 1. **Add env vars:** `AEGIS_API_URL`, `AEGIS_TENANT_API_KEY`, `AEGIS_SITE_ID` (server-side).
 2. **Bump dependency:** `byteforge-aegis-client-js` to `>=2.9.0`.
 3. **Add server helper:** `lib/serverAuthClient.ts` (above).
-4. **Add 6 proxy routes** under `app/api/frontend/auth/*`.
-5. **Update auth pages** to call the proxy routes (via `browserAuthProxy` or equivalent) instead of `getAuthClient().login(...)` etc.
-6. **Get the tenant key** from the Aegis admin dashboard (Site → Settings → Tenant API Key).
-7. **Redeploy** with the env var set. The frontend will fail with 401 on every register/login/etc. call until the env var is in place.
+4. **Add 6 proxy routes** under `app/api/frontend/auth/*` *(or in your sibling backend — see section 4b)*.
+5. **If using a sibling backend with strict input validation** (flask-smorest, FastAPI w/ `extra="forbid"`, AJV/zod with `additionalProperties: false`), make the proxy schemas tolerate unknown fields — the JS client always sends `site_id` in the body and a strict schema will 422 on it. See "Gotcha" in section 4b.
+6. **Update auth pages** to call the proxy routes (via `browserAuthProxy` or equivalent) instead of `getAuthClient().login(...)` etc.
+7. **Get the tenant key** from the Aegis admin dashboard (Site → Settings → Tenant API Key).
+8. **Redeploy** with the env var set. The frontend will fail with 401 on every register/login/etc. call until the env var is in place.
 
 ---
 
