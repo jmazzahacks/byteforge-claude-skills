@@ -176,7 +176,7 @@ The Gatekeeper backend exposes three endpoints **at the root**, not under `/api/
 
 | Path | Purpose | Add to this vhost? |
 |---|---|---|
-| `/authz` | nginx `auth_request` target for protected services | Only if this Gatekeeper is the auth source for vhosts that proxy auth_request to it via the **public URL** of this domain. If protected vhosts are on the same host and reach the backend over the docker network directly, leave it out. |
+| `/authz` | nginx `auth_request` target for protected services | **Required** if any vhost — on this host or another — uses `auth_request` against `https://<DOMAIN>/authz`. Optional only when every protected vhost is on the same host and reaches the backend container directly over the docker network (Step 5's same-host pattern). If you are not sure, add it — a 200 from `/authz` for a real consumer is fine; a 307 to `/<locale>/authz` for an off-host consumer breaks `auth_request` with `unexpected status: 307` → 500 to the browser. |
 | `/health` | health probe | Add only if external monitoring scrapes via the public URL. Internal docker `HEALTHCHECK` and Prometheus usually hit the container directly. |
 | `/metrics` | Prometheus metrics | Same as `/health` — usually internal-only. |
 
@@ -196,7 +196,7 @@ location ~ ^/(authz|health|metrics)$ {
 
 If `/authz` is only consumed by other location blocks on the same nginx (not by external clients), add `internal;` inside the block — that prevents external callers from hitting it directly.
 
-**Default to leaving these out.** A 404 from Next.js when nothing depends on them is harmless; if some external system breaks, come back and add the block then.
+**Default to leaving these out only if no off-host nginx will use this Gatekeeper for `auth_request`.** A 404 from Next.js for `/health` or `/metrics` when nothing depends on them is harmless. But for `/authz` specifically, "default to leaving it out" is wrong if any off-host consumer exists — Next.js's i18n middleware will 307 the path to `/<locale>/authz`, which silently breaks the calling vhost's `auth_request`. See **Failure Decoder**.
 
 ## Step 5 (Optional): CORS for Services Protected by Gatekeeper `/authz`
 
@@ -272,6 +272,39 @@ server {
 ```
 
 That's it on the nginx side — no `auth_request_set`, no `if ($request_method = OPTIONS)`, no `add_header` stanza. The architectural reason is below.
+
+### Off-host consumer (nginx on a different host)
+
+If the protected vhost is on a **different host** from the Gatekeeper deployment, the subrequest must go through Gatekeeper's public URL — there is no shared docker network. This requires Step 4 to be applied on the Gatekeeper host (otherwise the subrequest hits Next.js and i18n-redirects to `/<locale>/authz`).
+
+```nginx
+location = /authz_subrequest {
+    internal;
+    proxy_pass https://<GATEKEEPER_DOMAIN>/authz;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+
+    # HTTPS upstream — SNI is required; this host's resolver must
+    # be able to resolve the public DNS name.
+    proxy_ssl_server_name on;
+    proxy_ssl_name        <GATEKEEPER_DOMAIN>;
+    proxy_set_header Host <GATEKEEPER_DOMAIN>;
+
+    proxy_set_header X-Original-URI        $request_uri;
+    proxy_set_header X-Original-Method     $request_method;
+    proxy_set_header X-Original-Host       $host;
+    proxy_set_header X-Original-Origin     $http_origin;
+    proxy_set_header X-Original-User-Agent $http_user_agent;
+}
+```
+
+Verify Step 4 is applied on the Gatekeeper host **before** enabling this:
+
+```bash
+# MUST return 401/403, NOT a 307 to /<locale>/authz.
+curl -i -s -o /dev/null -w "HTTP %{http_code}  Location: %{redirect_url}\n" \
+  https://<GATEKEEPER_DOMAIN>/authz
+```
 
 ### Upstream-side CORS
 
@@ -396,6 +429,7 @@ These four decisions look like noise on a casual read. Each one fixes a real out
 | `/api/auth/*` returns 401 `"Invalid or missing tenant API key"` | Backend env mismatch — `AEGIS_TENANT_API_KEY` / `AEGIS_SITE_ID` don't match Aegis's `sites` row | Out of nginx scope; fix backend env |
 | `/api/config` returns 200 but JSON is `{"aegisApiUrl":"","siteName":"gatekeeper","siteDomain":""}` | Backend env vars `AEGIS_API_URL` / `SITE_NAME` / `SITE_DOMAIN` missing | Out of nginx scope; set them in backend container env and restart |
 | Browser shows "Failed to load configuration from /api/config: ..." | The frontend successfully reached `/api/config` but got a non-200 response | Run smoke test 2 above; whatever curl shows is what the browser sees |
+| `auth request unexpected status: 307` in nginx error log, `Location: https://<gatekeeper-host>/<locale>/authz` (e.g. `/en/authz`) | Off-host `auth_request` consumer reached Gatekeeper's public URL, but the Gatekeeper vhost has no explicit `/authz` location → fell through to Next.js → next-intl redirected to a localized path. `auth_request` only accepts 2xx/401/403, so nginx returns 500 to the client. | Apply Step 4's `location ~ ^/(authz\|health\|metrics)$` block on the Gatekeeper vhost. Re-test with the curl in Step 5's "Off-host consumer" subsection. |
 
 ## Report Back
 
