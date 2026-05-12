@@ -13,15 +13,17 @@ Use this skill when:
 - Adding a `/metrics` endpoint to a Python/Flask service
 - The service runs (or might run) under gunicorn with more than one worker
 - You need cross-worker business metrics (signups, jobs, queue depth, etc.) and Redis is available
-- You are debugging inflated `rate()` values, phantom traffic, or `process_start_time_seconds` reporting multiple values for the same service
+- You are debugging inflated `rate()` values or phantom traffic in PromQL — counter values appear to "reset" because scrapes bounce between workers with private registries
 
 ## The Multi-Worker Gunicorn Trap (Read This First)
 
-`prometheus_client` keeps metrics in **per-process** memory. Under gunicorn with N workers, each worker has its own private registry. Prometheus scrapes hit a random worker each time, so:
+`prometheus_client` keeps application metrics (`Counter`, `Histogram`, `Gauge`) in **per-process** memory. Under gunicorn with N workers, each worker has its own private registry. Prometheus scrapes hit a random worker each time, so:
 
 - Counter values appear to "reset" as scrapes bounce between workers → PromQL `rate()` manufactures phantom traffic (often 5–10× the real rate for a 4-worker setup)
-- `process_start_time_seconds` returns **N distinct values** over time — a one-line diagnostic for this bug
-- Gauges that should be aggregate-able (e.g. queue depth) report whichever worker answered the scrape
+- Gauges that should be aggregate-able (e.g. queue depth) report whichever worker answered the scrape — not the cluster-wide value
+- Histograms double-count or miss buckets the same way
+
+**What does NOT prove this bug:** `process_start_time_seconds`, `python_info`, `process_cpu_seconds_total`, `python_gc_*`, and other metrics from `ProcessCollector` / `PlatformCollector` / `GCCollector` will **always** return N distinct values across scrapes — once per worker PID. `prometheus_client` does not aggregate those collectors across processes by design, regardless of whether multiproc is wired correctly. Diagnose using application metrics (`Counter`/`Histogram`/`Gauge` you declared), not process metrics.
 
 **Fix:** every Step in this skill assumes multi-worker. The pieces are:
 
@@ -135,6 +137,38 @@ app = create_app()
 - `flask_http_request_exceptions_total{method,endpoint}` — unhandled exception counter
 - Default process metrics: `process_resident_memory_bytes`, `process_cpu_seconds_total`, `process_start_time_seconds`, GC stats
 
+### Note: raw `prometheus_client` path (only if you can't use `GunicornPrometheusMetrics`)
+
+Some services have reason not to adopt `prometheus_flask_exporter` (custom transport, non-Flask consumer of the same registry, etc.). The canonical bare-bones multiproc pattern in upstream `prometheus_client` docs looks like this:
+
+```python
+from prometheus_client import (
+    generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST, multiprocess,
+)
+import os
+
+def get_metrics():
+    if os.environ.get('PROMETHEUS_MULTIPROC_DIR'):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return generate_latest(registry), CONTENT_TYPE_LATEST
+    return generate_latest(), CONTENT_TYPE_LATEST
+```
+
+**Gotcha**: the fresh `CollectorRegistry()` does **not** include `ProcessCollector`, `PlatformCollector`, or `GCCollector` — those are attached to the global `REGISTRY`. The resulting `/metrics` will be missing `process_*`, `python_info`, and `python_gc_*` entirely. To restore them:
+
+```python
+from prometheus_client import ProcessCollector, PlatformCollector, GC_COLLECTOR
+
+registry = CollectorRegistry()
+multiprocess.MultiProcessCollector(registry)
+ProcessCollector(registry=registry)
+PlatformCollector(registry=registry)
+registry.register(GC_COLLECTOR)
+```
+
+These three collectors are **per-worker** (sampled at scrape time from whichever worker responds), not multiproc-aggregated. That is `prometheus_client`'s documented behavior — not a bug, and not something to "fix." See the Multi-Worker Gunicorn Trap section above.
+
 ## Step 4: Create gunicorn_conf.py
 
 Create `gunicorn_conf.py` in the project root:
@@ -142,8 +176,13 @@ Create `gunicorn_conf.py` in the project root:
 ```python
 """Gunicorn config — required for prometheus_client multiproc safety.
 
-When a worker dies, its on-disk metric shards must be released or stale
-data accumulates and the multiproc collector returns inflated values.
+When a worker dies, mark_process_dead() removes its gauge_live*_<pid>.db
+shards so 'livesum' / 'liveall' / 'livemax' / 'livemin' / 'livemostrecent'
+gauges stop counting the dead worker.
+
+Counter, Histogram, and non-live Gauge mode shards ('mostrecent', 'max',
+'min', 'all', 'sum') are NOT touched by mark_process_dead — they are
+preserved intentionally so aggregated values survive worker churn.
 """
 from prometheus_client import multiprocess
 
@@ -153,6 +192,8 @@ def child_exit(server, worker):
 ```
 
 That single hook is the only thing this file must do for metrics. Add other gunicorn settings (workers, bind, timeout) however the project normally configures them.
+
+**Why this matters**: if you use any `live*` gauge mode (e.g. `multiprocess_mode='livesum'` for in-flight request counts), missing this hook means a crashed worker keeps contributing to the sum forever. For Counters, Histograms, and non-live Gauge modes, the hook is a no-op — those shards are preserved either way. So "missing `_dead` markers" or "non-shrinking shard count after a worker dies" is **not** evidence of a broken multiproc setup — that's the documented behavior for non-`live*` modes.
 
 ## Step 5: Deploy-Side Setup (Dockerfile / docker-compose / systemd)
 
@@ -374,25 +415,35 @@ Custom collectors that read Redis on every scrape can explode if you create one 
 
 Run these checks **after deploying**. Skipping this step is how the multi-worker bug ships to production unnoticed.
 
-### Check 1: Counters are monotonically non-decreasing
+### Check 1: An application Counter is monotonically non-decreasing
+
+Pick a `Counter` that you have declared in your application (or `flask_http_request_total` if you used `GunicornPrometheusMetrics` from Step 3). Do **not** substitute `process_*`, `python_gc_*`, or `python_info` — those are per-worker by design (see Multi-Worker Gunicorn Trap section) and would false-FAIL this check even with multiproc wired correctly.
 
 ```bash
 for i in 1 2 3 4 5; do
-  curl -s https://<your-host>/metrics | grep '^flask_http_request_total{' | head -3
+  curl -s https://<your-host>/metrics | grep '^<your_counter_name>{' | head -3
   echo "---"
   sleep 2
 done
 ```
 
-Counter values should only go up or stay the same. If they bounce (down, then up, then down), multiproc is not wired correctly — re-check Steps 3, 4, 5.
+**Pass**: values stay the same or increase. **Fail**: values bounce (down, then up, then down) — that means scrapes are landing on different workers with private registries. Re-check Steps 3, 4, 5.
 
-### Check 2: `process_start_time_seconds` reports ONE value, not N
+### Check 2: An application metric stays consistent across scrapes (not bouncing per worker)
+
+Pick any application Counter, Histogram bucket, or Gauge declared with `multiprocess_mode` set. Across 10 consecutive scrapes, the value should be identical (or trending monotonically for Counters — never bouncing between unrelated values).
 
 ```bash
-curl -s https://<your-host>/metrics | grep '^process_start_time_seconds'
+METRICS_URL="https://<your-host>/metrics"
+for i in $(seq 1 10); do
+  curl -fsS "$METRICS_URL" | grep '^<your_app_metric_name> '
+  sleep 1
+done | sort -u
 ```
 
-You should see exactly one line. If you see N distinct values where N matches your worker count, `PROMETHEUS_MULTIPROC_DIR` is unset or the multiproc collector isn't being used.
+**Pass**: one unique value (Gauge) or a small monotonically increasing set (Counter). **Fail**: many unrelated values — each row from a different worker's private registry, which means `MultiProcessCollector` is not in the response path.
+
+**Do NOT use** `process_start_time_seconds`, `process_cpu_seconds_total`, `python_info`, `python_gc_*`, or any metric from `ProcessCollector` / `PlatformCollector` / `GCCollector` for this check. Those are never aggregated across workers — they return one value per worker PID regardless of whether multiproc is wired. Using them as a multiproc diagnostic produces false negatives.
 
 ### Check 3: `rate()` returns a sensible value in Grafana
 
@@ -458,7 +509,7 @@ Things that look fine in dev and break in prod. All four are real and have shipp
 
 | # | Trap | Symptom | Fix |
 |---|------|---------|-----|
-| 1 | No multiproc wiring under multi-worker gunicorn | `rate()` 5–10× too high; `process_start_time_seconds` has N values | Steps 3, 4, 5 — all three are needed; any one missing leaves the bug |
+| 1 | No multiproc wiring under multi-worker gunicorn | `rate()` 5–10× too high; an application Counter "resets" between scrapes; a Gauge bounces between unrelated values | Steps 3, 4, 5 — all three are needed; any one missing leaves the bug. **Do not** use `process_start_time_seconds` plurality as the diagnostic — it is always per-worker regardless of multiproc wiring |
 | 2 | Gauges declared without `multiprocess_mode` | Gauge disappears from `/metrics` after enabling multiproc | Add `multiprocess_mode='livesum'` (or `'liveall'`, `'max'`, `'min'`) |
 | 3 | `PROMETHEUS_MULTIPROC_DIR` not cleaned on startup | Counter values appear pre-loaded from a prior container's shards; `rate()` initially negative then settles | `rm -rf $PROMETHEUS_MULTIPROC_DIR/*` in entrypoint BEFORE launching gunicorn |
 | 4 | High-cardinality labels (user ID, request ID, full URL path) | Prometheus storage/memory blows up; queries slow to crawl | Use `group_by='endpoint'` not URL path; never label by user/request ID; for Redis collector, never key on high-cardinality dimensions |
@@ -468,8 +519,10 @@ Things that look fine in dev and break in prod. All four are real and have shipp
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `rate(flask_http_request_total[5m])` returns 5–10× the real traffic | Multi-worker gunicorn without multiproc — each worker keeps a private registry, scrapes bounce between them, PromQL reads the bouncing as counter resets and manufactures phantom traffic | Apply Steps 3, 4, 5 in full |
-| `process_start_time_seconds` returns N distinct values where N matches worker count | Multiproc collector isn't being used — likely `PROMETHEUS_MULTIPROC_DIR` not set or `GunicornPrometheusMetrics` was never instantiated | Confirm env var is set in the running container (`docker exec ... env | grep PROMETHEUS`), confirm `GunicornPrometheusMetrics(app)` is called in `create_app()` |
-| Gauge metric missing from `/metrics` entirely | Gauge was declared without `multiprocess_mode` — the multiproc collector drops aggregation-ambiguous gauges silently | Add `multiprocess_mode='livesum'` (or `'liveall'`/`'max'`/`'min'` as appropriate) |
+| An application Counter's value bounces (e.g. 1247 → 893 → 1402 → 651) across consecutive scrapes | Same as above — multiproc collector isn't in the `/metrics` response path; scrapes are landing on different workers with private registries | Confirm `PROMETHEUS_MULTIPROC_DIR` is set in the running container (`docker exec ... env \| grep PROMETHEUS`), confirm `GunicornPrometheusMetrics(app)` is called in `create_app()`, confirm `gunicorn_conf.py` is passed with `-c` |
+| Gauge metric missing from `/metrics` entirely | Gauge was declared without `multiprocess_mode` — the multiproc collector drops aggregation-ambiguous gauges silently | Add `multiprocess_mode='livesum'` (or `'liveall'`/`'max'`/`'min'`/`'mostrecent'` as appropriate) |
+| `process_start_time_seconds`, `python_info`, or `process_cpu_seconds_total` returns N distinct values | **Not a bug.** `ProcessCollector`, `PlatformCollector`, and `GCCollector` are per-worker by design and are never aggregated by `MultiProcessCollector`. Diagnose using application metrics (Counter/Histogram/Gauge) instead | None — this is documented `prometheus_client` behavior, not a multiproc problem |
+| `/metrics` is missing `process_*` and `python_info` entirely (under raw `prometheus_client`, not `GunicornPrometheusMetrics`) | `ProcessCollector` and `PlatformCollector` were not registered on the fresh `CollectorRegistry()` used by `MultiProcessCollector` — they only live on the global `REGISTRY` | Register them explicitly: see "Note: raw `prometheus_client` path" in Step 3 |
 | `/metrics` returns 500 with `FileNotFoundError` in logs pointing at `PROMETHEUS_MULTIPROC_DIR` | Env var is set, but the directory does not exist or is not writable by the gunicorn user | Add the `mkdir -p $PROMETHEUS_MULTIPROC_DIR` step to entrypoint/ExecStartPre; verify file permissions match the runtime user |
 | Counter values appear inflated at container startup and slowly decrease | Stale shards from a previous container's exit weren't cleaned, multiproc collector summed them with the new worker shards | Add `rm -rf $PROMETHEUS_MULTIPROC_DIR/*` to entrypoint BEFORE launching gunicorn |
 | `redis.exceptions.ConnectionError` in `/metrics` response | `RedisBusinessMetricsCollector` is registered but Redis is unreachable; the custom collector raises during scrape and the whole `/metrics` response fails | Wrap the `collect()` method body in a `try/except redis.RedisError` that logs and yields nothing — a Redis outage should degrade business metrics, not kill the scrape |
@@ -482,8 +535,10 @@ When done, report:
 
 1. Files created/modified (with paths)
 2. The values for application_tag, app file, gunicorn multi-worker (yes/no), Redis (yes/no)
-3. The output of `curl /metrics | grep '^process_start_time_seconds'` from a real deploy — exactly one line confirms multiproc is wired
-4. The output of `curl /metrics | grep '^flask_http_request_total{' | head -3` from two scrapes 2s apart — confirm counters are monotonically non-decreasing
+3. Output of Step 7 Check 1 (application Counter monotonicity across 5 scrapes) — values should only go up or stay the same
+4. Output of Step 7 Check 2 (application metric stability across 10 scrapes piped through `sort -u`) — one unique value for a Gauge, or a small monotonic set for a Counter
 5. Whether the starter dashboard was imported and is showing data
+
+**Do not** use `process_start_time_seconds`, `process_cpu_seconds_total`, or other `ProcessCollector` metrics in the verification — they are per-worker by design and produce false negatives. See the Multi-Worker Gunicorn Trap section.
 
 If any check fails, walk through the **Failure Decoder** — every row maps a real symptom back to the Step that fixes it.
