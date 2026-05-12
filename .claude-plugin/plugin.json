@@ -1,7 +1,7 @@
 {
   "name": "byteforge-claude-skills",
   "description": "Collection of Claude Code skills by @jmazzahacks that codify best practices and reusable patterns for software development",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "author": {
     "name": "Jason Byteforge",
     "github": "jmazzahacks"
@@ -22,7 +22,12 @@
     "frontend",
     "nginx",
     "gatekeeper",
-    "reverse-proxy"
+    "reverse-proxy",
+    "prometheus",
+    "metrics",
+    "observability",
+    "gunicorn",
+    "grafana"
   ],
   "license": "MIT"
 }

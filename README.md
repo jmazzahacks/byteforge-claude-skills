@@ -315,6 +315,41 @@ A skill that produces a complete nginx vhost for a ByteForge Gatekeeper deployme
 
 ---
 
+### byteforge-prometheus-metrics
+
+A skill that wires Prometheus metrics into a Python/Flask app **safely under multi-worker gunicorn**, with optional Redis-backed business metrics and a starter Grafana dashboard.
+
+**What it creates:**
+- `requirements.txt` entries for `prometheus_client`, `prometheus_flask_exporter`, optional `redis`
+- `GunicornPrometheusMetrics` wired inside `create_app()` (post-fork safe)
+- `gunicorn_conf.py` with `child_exit` hook for multiproc shard cleanup
+- Dockerfile/docker-compose/systemd snippets for `PROMETHEUS_MULTIPROC_DIR` + tmpfs + startup dir cleanup
+- Custom-metric examples for both file-multiproc (with Gauge `multiprocess_mode`) and Redis-backed business metrics
+- Starter Grafana dashboard JSON (request rate, p50/p95/p99 latency, error rate, memory, CPU)
+- Prometheus scrape config snippet
+- Symptom→cause→fix failure decoder for the multi-worker traps
+
+**Features:**
+- ✅ Multi-worker gunicorn safe (no phantom `rate()`, no `process_start_time_seconds` plurality)
+- ✅ `application` label matches [[byteforge-loki-logging]] for correlated log/metric queries
+- ✅ Redis-backed custom collector for cross-worker business counters/gauges
+- ✅ Gauge `multiprocess_mode` documented (otherwise silently dropped)
+- ✅ tmpfs for the multiproc shard directory (no disk I/O per metric increment)
+- ✅ Startup `rm -rf` ensures no stale-shard inflation after redeploys
+- ✅ Post-deploy verification checklist (counter monotonicity, scrape parity)
+- ✅ Importable Grafana dashboard parameterized on `application`
+
+**Design Principles:**
+1. **Multi-worker by default** — every Step assumes gunicorn workers > 1
+2. **No silent drops** — Gauges declare `multiprocess_mode`, never assume defaults
+3. **Source-of-truth Redis for business metrics** — cross-worker counters survive worker recycling
+4. **Correlate with logs** — share the `application` label with the Loki skill
+5. **Verify in prod, not just dev** — counter monotonicity check is part of the skill flow
+
+[View full byteforge-prometheus-metrics documentation →](./skills/byteforge-prometheus-metrics/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -416,7 +451,8 @@ byteforge-claude-skills/
 │   ├── aegis-nextjs-frontend/
 │   ├── mcp-docker-deployment/
 │   ├── python-project-scaffold/
-│   └── gatekeeper-nginx-setup/
+│   ├── gatekeeper-nginx-setup/
+│   └── byteforge-prometheus-metrics/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```
