@@ -290,14 +290,6 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024  # 1 MB cap on webhook bodies
 
 PORT = int(os.environ.get('PORT', '{port}'))
 
-# Webhook secret for Telegram request validation
-TELEGRAM_WEBHOOK_SECRET = os.environ.get('{APP_TAG}_TELEGRAM_WEBHOOK_SECRET')
-if not TELEGRAM_WEBHOOK_SECRET:
-    logger.warning(
-        "{APP_TAG}_TELEGRAM_WEBHOOK_SECRET not set — webhook validation DISABLED. "
-        "Do not run this way in production."
-    )
-
 telegram_handler = TelegramWebhookHandler()
 
 
@@ -316,13 +308,20 @@ def telegram_webhook():
     is validated against {APP_TAG}_TELEGRAM_WEBHOOK_SECRET to reject forged
     requests.
     """
-    if TELEGRAM_WEBHOOK_SECRET:
-        request_token = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-        if not request_token or not hmac.compare_digest(
-            request_token, TELEGRAM_WEBHOOK_SECRET
-        ):
-            logger.warning("Webhook rejected: invalid or missing secret token")
-            return jsonify({'status': 'error'}), 401
+    secret = os.environ.get('{APP_TAG}_TELEGRAM_WEBHOOK_SECRET')
+    if not secret:
+        # Fail-closed: never accept unauthenticated webhook traffic, even in dev.
+        # A forgotten env var in prod would otherwise silently expose every
+        # handler to anyone who finds the URL.
+        logger.warning(
+            "{APP_TAG}_TELEGRAM_WEBHOOK_SECRET not set — rejecting webhook"
+        )
+        return jsonify({'status': 'error'}), 503
+
+    request_token = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+    if not request_token or not hmac.compare_digest(request_token, secret):
+        logger.warning("Webhook rejected: invalid or missing secret token")
+        return jsonify({'status': 'error'}), 401
 
     try:
         update = request.get_json()
@@ -359,9 +358,8 @@ if __name__ == '__main__':
 Do **not** rewrite it. Instead, edit it surgically:
 
 1. Add `import hmac` and the `from flask import request` imports if missing
-2. Add the `TELEGRAM_WEBHOOK_SECRET` env var read near the top
-3. Construct `telegram_handler = TelegramWebhookHandler(...)` once at module scope
-4. Add the `@app.route('/telegram/webhook', methods=['POST'])` route from the snippet above
+2. Construct `telegram_handler = TelegramWebhookHandler(...)` once at module scope
+3. Add the `@app.route('/telegram/webhook', methods=['POST'])` route from the snippet above (the secret is read from the env var inside the handler — no module-level state needed)
 
 Match the file's existing import order, indentation, and logging conventions.
 
@@ -439,7 +437,7 @@ setup-telegram-webhook --token "$MY_BOT_TELEGRAM_BOT_TOKEN" --delete
    curl -X POST http://localhost:{port}/telegram/webhook \
         -H 'Content-Type: application/json' \
         -d '{"message":{"text":"/start","chat":{"id":1},"from":{"username":"x"}}}'
-   # → {"status":"error"}  (HTTP 401)
+   # → {"status":"error"}  (HTTP 401 if secret env var is set, HTTP 503 if not)
    ```
 
 3. **Accept properly authenticated webhook calls:**
@@ -455,7 +453,7 @@ setup-telegram-webhook --token "$MY_BOT_TELEGRAM_BOT_TOKEN" --delete
 
 ## Security Notes
 
-1. **Always set the webhook secret in production.** A missing/empty `TELEGRAM_WEBHOOK_SECRET` means anyone who finds your webhook URL can drive your handlers.
+1. **The webhook is fail-closed: no secret = 503 on every request.** The route refuses traffic when `{APP_TAG}_TELEGRAM_WEBHOOK_SECRET` is unset, in every environment including local dev. Fail-open ("missing secret means accept everything") is too easy to ship to prod by accident — a forgotten env var would silently expose every command handler to the internet. If you need to test the route without a real Telegram registration, set the env var to any value and pass it in the `X-Telegram-Bot-Api-Secret-Token` header from curl.
 
 2. **Use `hmac.compare_digest`, never `==`.** A naive comparison leaks timing information that lets an attacker recover the secret byte by byte.
 
@@ -500,6 +498,7 @@ If the bot stores per-user state (registrations, chat IDs, etc.), pair this skil
 | Symptom | Likely cause |
 |---|---|
 | Webhook returns 401 for every request | `TELEGRAM_WEBHOOK_SECRET` env var differs between what Telegram has registered and what the server has loaded. Re-run `setup-telegram-webhook --url ...` with the matching secret. |
+| Webhook returns 503 for every request, even with valid header | `{APP_TAG}_TELEGRAM_WEBHOOK_SECRET` env var is unset — the route fails closed when the secret is missing. Set the env var and restart. |
 | Telegram's `getWebhookInfo` shows `last_error_message: SSL` | The server's TLS cert isn't trusted by Telegram. Use a public CA (Let's Encrypt) — Telegram won't trust private/self-signed CAs. |
 | Bot never responds even though logs show the update arrived | The handler returned `None` (no response needed) but you expected a reply. Make sure `_handle_*` methods return a `TelegramResponse`. |
 | Bot replies appear unformatted (raw `<b>` tags visible) | `parse_mode` was set to something other than `'HTML'`, or the receiving client doesn't render HTML — switch to `parse_mode='MarkdownV2'` if needed. |
