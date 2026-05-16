@@ -350,6 +350,39 @@ A skill that wires Prometheus metrics into a Python/Flask app **safely under mul
 
 ---
 
+### flask-telegram-bot
+
+A skill that wires a Telegram bot webhook endpoint into a Flask service using the public `byteforge-telegram` library — secret-token validation, command routing, and outbound notifications.
+
+**What it creates:**
+- Flask `/telegram/webhook` route with `X-Telegram-Bot-Api-Secret-Token` validation (`hmac.compare_digest`)
+- `/health` endpoint for orchestration probes
+- `src/telegram_webhook_handler.py` — `TelegramWebhookHandler` class routing slash commands to per-command methods, returning typed `TelegramResponse` objects
+- `src/telegram_notifier.py` — wrapper around `TelegramBotController` for outbound pushes from anywhere in the app
+- `requirements.txt` updates (`flask`, `gunicorn`, `byteforge-telegram`)
+- `example.env` entries for bot token, webhook secret, and optional admin chat ID
+- Instructions for running `setup-telegram-webhook --url ...` to register the webhook with Telegram
+
+**Features:**
+- ✅ HTTPS webhook (not long-polling) — lower latency, no idle traffic
+- ✅ `hmac.compare_digest` secret-token validation by default (rejects forged requests)
+- ✅ Dispatch table of slash commands → handler methods, easy to unit-test in isolation
+- ✅ Type-safe `TelegramResponse` replies via the public `byteforge-telegram` package
+- ✅ Separate outbound notifier so non-webhook code paths can push messages
+- ✅ No private dependencies — `byteforge-telegram` is on PyPI
+- ✅ Composes with [[flask-docker-deployment]], [[byteforge-loki-logging]], [[byteforge-prometheus-metrics]], [[gatekeeper-nginx-setup]], and [[postgres-setup]]
+
+**Design Principles:**
+1. **Webhook over polling** — production-grade delivery semantics from day one
+2. **Always validate the secret token** — the webhook URL alone is not a secret
+3. **Command routing as a dispatch table** — one method per command, returning `TelegramResponse`
+4. **Outbound is a separate concern** — webhooks reply via response body, async paths push via `TelegramNotifier`
+5. **Public deps only** — no `CR_PAT` token plumbing required
+
+[View full flask-telegram-bot documentation →](./skills/flask-telegram-bot/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -452,7 +485,8 @@ byteforge-claude-skills/
 │   ├── mcp-docker-deployment/
 │   ├── python-project-scaffold/
 │   ├── gatekeeper-nginx-setup/
-│   └── byteforge-prometheus-metrics/
+│   ├── byteforge-prometheus-metrics/
+│   └── flask-telegram-bot/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```
