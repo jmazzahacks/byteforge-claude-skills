@@ -71,7 +71,7 @@ Confirm the following are in place. Each maps to a trap in **Traps** below.
    ```bash
    grep -rn "^\s*resolver " /etc/nginx/
    ```
-   - For container nginx on a docker user network: `resolver 127.0.0.11 valid=10s;`
+   - For container nginx on a docker user network: `resolver 127.0.0.11 valid=10s ipv6=off;`. The `ipv6=off` flag is required if any upstream resolved through this resolver is on a dual-stack hostname (Cloudflare-fronted, public-DNS, etc.) — without it, nginx may pick an AAAA record that the IPv4-only docker bridge can't route, and `auth_request` returns 403 across every protected route. Safe to include unconditionally.
    - If missing → proxy_pass fails silently with "no resolver defined" → 502 at request time. Add it once in the server block (greenfield does this) or in nginx.conf's http block.
 
 2. **`auth-gatekeeper.conf` snippet** — must `include` cleanly in the server block and define `location = /auth` (internal). Verify with:
@@ -199,7 +199,12 @@ server {
     # restart. The variable-form `proxy_pass http://$mcp_upstream:$mcp_port`
     # in snippets/mcp-location.conf REQUIRES this. Without it, nginx fails
     # with "no resolver defined" at request time → 502. See Trap 5.
-    resolver 127.0.0.11 valid=10s;
+    #
+    # ipv6=off: if the auth subrequest or any proxy target is on a dual-stack
+    # public hostname (Cloudflare-fronted, etc.), nginx may pick the AAAA
+    # record and connect() over IPv6 — but a default docker bridge is IPv4-
+    # only, so the subrequest fails with ENETUNREACH → 403 to client.
+    resolver 127.0.0.11 valid=10s ipv6=off;
 
     ssl_certificate     /etc/nginx/ssl/<DOMAIN>.crt;
     ssl_certificate_key /etc/nginx/ssl/<DOMAIN>.key;
@@ -377,7 +382,9 @@ If the upstream MCP server **does** need the original bearer (rare — usually o
 
 The snippet uses `proxy_pass http://$mcp_upstream:$mcp_port;`. The variable form forces nginx to resolve the upstream **at request time**, not at config-load time. That's exactly what we want — MCP containers restart and get new IPs on the docker network, and a static `proxy_pass http://foo-container:8000` would cache the first IP forever.
 
-But variable form requires a `resolver` directive. Without it, nginx fails with "no resolver defined" at request time → 502 to the client, "host not found" in error.log. The greenfield vhost includes `resolver 127.0.0.11 valid=10s` (docker's embedded DNS). The brownfield path verifies one exists.
+But variable form requires a `resolver` directive. Without it, nginx fails with "no resolver defined" at request time → 502 to the client, "host not found" in error.log. The greenfield vhost includes `resolver 127.0.0.11 valid=10s ipv6=off` (docker's embedded DNS). The brownfield path verifies one exists.
+
+Add `ipv6=off` to the resolver line if any upstream is on a dual-stack hostname (e.g., Cloudflare-fronted public services like a remote gatekeeper). Without it, nginx may pick the AAAA result, try `connect()` over IPv6, and fail with `ENETUNREACH` because the default docker bridge is IPv4-only. The failure mode is especially nasty: every protected route returns 403, including routes that were working seconds earlier, because the resolver picks IPv6 non-deterministically. The diagnosis is in error.log (`Network is unreachable ... subrequest: "/auth"`), not in the access log or gatekeeper logs.
 
 ### Trap 6 — Buffering off, timeouts long
 
@@ -398,6 +405,7 @@ The `snippets/` subdirectory keeps the snippet outside auto-loading, and each `l
 | `nginx: [emerg] "auth_request" directive is not allowed here` on reload | Snippet placed in `conf.d/` root (auto-loaded into http{} scope) | Move to `conf.d/snippets/`; ensure no `*.conf` glob picks it up. See Trap 7 |
 | `502 Bad Gateway` immediately on first request; error log says `no resolver defined to resolve` | Missing `resolver` directive | Add `resolver 127.0.0.11 valid=10s;` to the server block. See Trap 5 |
 | `502 Bad Gateway` shortly after container restart, was working before | Cached pre-restart IP — `valid=10s` should expire within seconds; or upstream is genuinely down | `docker ps` to confirm container is up; `docker logs <UPSTREAM_CONTAINER>` for crashes |
+| `403 Forbidden` from nginx on every `/mcp-*` route, including ones that worked minutes ago. error.log shows `connect() to [<v6>]:... failed (101: Network is unreachable) ... subrequest: "/auth"` | Resolver missing `ipv6=off`; auth/proxy upstream is dual-stack but docker bridge is IPv4-only | Add `ipv6=off` to the resolver directive. See Trap 5 |
 | `401 Unauthorized` even with what should be a valid bearer token | Token doesn't match a gatekeeper-registered route, or `auth-gatekeeper.conf` not `include`d in this vhost | Confirm `include …/auth-gatekeeper.conf` is inside the server block; check gatekeeper's route + token config |
 | `404 Not Found` from upstream on POST after SSE connect | Using SSE transport behind a path prefix — `/messages/` resolved relative on the client | Switch server + client to streamable-http. See Trap 1 |
 | Claude Code stuck in OAuth-discovery loop, never uses the bearer in `.mcp.json` | `.well-known` returns 401 (protected) instead of 404 | Verify the `~ ^/mcp-[^/]+/\.well-known/` location is present and returns 404 unconditionally. See Trap 3 |
