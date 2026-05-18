@@ -341,6 +341,220 @@ process.start()
 | `multiprocessing.Process` child | Top of target function | QueueListener thread + SSL context don't survive fork |
 | Direct `os.fork()` child | Immediately after fork in child branch | Same reason |
 
+### MCP Server (FastMCP / uvicorn)
+
+Use this section when integrating with an MCP server built on `FastMCP` (the high-level wrapper in the `mcp` Python SDK). Verified end-to-end against `mcp==1.27.x` / FastMCP `streamable-http` and `sse` transports on 2026-05-18.
+
+#### The problem
+
+FastMCP's `mcp.run(transport="streamable-http")` internally constructs a `uvicorn.Config` **without** passing `log_config=`. uvicorn falls back to its default `LOGGING_CONFIG`, which attaches its own `StreamHandler` instances to the `uvicorn`, `uvicorn.access`, and `uvicorn.error` loggers with `propagate=False`. Those records bypass Python's root logger entirely, which means the `configure_logging()` handler we installed on root never sees them — and HTTP access logs (`POST /mcp ... 200`) **never reach Loki**. The container looks alive (you can `curl` the MCP successfully), but Loki shows nothing under `application=<your-tag>`.
+
+This is identical in shape to the Flask + Gunicorn case for the same reason (third-party loggers with their own handlers + `propagate=False`), but the fix is different because FastMCP doesn't expose a hook analogous to `create_app()`.
+
+#### The fix
+
+`FastMCP.run()` does not accept a `log_config` kwarg. Bypass `mcp.run()` for HTTP transports and drive uvicorn directly, reusing the Starlette app that FastMCP builds:
+
+```python
+import asyncio
+import logging
+import os
+
+import uvicorn
+from byteforge_loki_logging import configure_logging
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("my-mcp-server", host="0.0.0.0", port=8000, stateless_http=True)
+
+# ... register tools with @mcp.tool() ...
+
+
+def main() -> None:
+    # configure_logging() in main() runs BEFORE uvicorn boots. uvicorn doesn't
+    # fork by default — unlike gunicorn — so the QueueListener + SSL session
+    # the Loki handler creates are inherited safely by uvicorn's own coroutines.
+    # No post-fork concerns here; this is the right place.
+    debug_mode = os.environ.get("DEBUG_LOCAL", "true").lower() == "true"
+    log_level = os.environ.get("LOG_LEVEL", "INFO")
+    configure_logging(
+        application_tag="my-mcp-server",
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
+
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+
+    if transport == "stdio":
+        # stdio has no uvicorn at all — JSON-RPC straight over stdin/stdout.
+        # The log_config concerns below don't apply. FastMCP's mcp.run() is
+        # correct for this case.
+        mcp.run(transport="stdio")
+        return
+
+    # For streamable-http / sse, drive uvicorn directly so we can pass a
+    # log_config that routes uvicorn.* loggers through the root logger
+    # (where byteforge-loki-logging's handler ships to Loki).
+    starlette_app = (
+        mcp.streamable_http_app() if transport == "streamable-http"
+        else mcp.sse_app()
+    )
+    uv_config = uvicorn.Config(
+        starlette_app,
+        host=os.environ.get("FASTMCP_HOST", "0.0.0.0"),
+        port=int(os.environ.get("FASTMCP_PORT", "8000")),
+        log_level=log_level.lower(),
+        log_config=_uvicorn_log_config_propagating_to_root(),
+    )
+    asyncio.run(uvicorn.Server(uv_config).serve())
+
+
+def _uvicorn_log_config_propagating_to_root() -> dict:
+    """uvicorn log_config that routes uvicorn.* loggers through Python root.
+
+    `disable_existing_loggers: False` is CRITICAL — without it, dictConfig
+    silently wipes the root configuration that configure_logging() just
+    installed. Setting `handlers: []` + `propagate: True` on each uvicorn
+    logger means records bubble up to root where byteforge-loki-logging's
+    handler picks them up.
+    """
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "loggers": {
+            "uvicorn": {"handlers": [], "level": "INFO", "propagate": True},
+            "uvicorn.access": {"handlers": [], "level": "INFO", "propagate": True},
+            "uvicorn.error": {"handlers": [], "level": "INFO", "propagate": True},
+        },
+    }
+
+
+if __name__ == "__main__":
+    main()
+```
+
+#### Why this works (and why it's not a hack)
+
+`FastMCP.streamable_http_app()` and `FastMCP.sse_app()` are documented public methods that return a Starlette app. The only thing `mcp.run()` does on top of `uvicorn.run(starlette_app, ...)` is wire host/port from FastMCP's settings — which we read directly from the environment anyway. So we're not bypassing internals; we're using FastMCP's documented building blocks plus uvicorn's documented `log_config` parameter.
+
+If FastMCP ever adds a `log_config` kwarg to `mcp.run()`, this whole section becomes a one-line `mcp.run(transport=..., log_config=_uvicorn_log_config_propagating_to_root())`.
+
+#### Tool-invocation logging
+
+`configure_logging()` only sets up the transport — application-level log lines still need to come from somewhere. FastMCP tools are decorated with `@mcp.tool()` and may take an optional `Context` parameter (which FastMCP strips from the LLM-visible tool schema). Use it to read request headers and emit per-call audit logs:
+
+```python
+import time
+from mcp.server.fastmcp import Context
+
+logger = logging.getLogger(__name__)
+
+
+def _caller_from(ctx: Context) -> tuple[str | None, str | None]:
+    """Return (X-Client-ID, X-Client-Name) if present on the current request.
+
+    For HTTP transports (streamable-http, sse), nginx — or whatever gateway
+    sits in front — typically forwards client identity via custom headers
+    after upstream auth. For stdio, there's no HTTP request; this returns
+    (None, None) and callers must handle that gracefully.
+    """
+    try:
+        request = ctx.request_context.request
+    except (ValueError, AttributeError):
+        # No active request (stdio) or Context outside request scope
+        return None, None
+    if request is None or not hasattr(request, "headers"):
+        return None, None
+    return (
+        request.headers.get("x-client-id"),
+        request.headers.get("x-client-name"),
+    )
+
+
+class _LogToolCall:
+    """Async context manager: time a tool call and emit a structured log line
+    on exit (success or error). Wrap each tool body with `async with`."""
+
+    def __init__(self, tool: str, ctx: Context) -> None:
+        self._tool = tool
+        self._ctx = ctx
+        self._start = 0.0
+        self._error: str | None = None
+
+    async def __aenter__(self) -> "_LogToolCall":
+        self._start = time.monotonic()
+        return self
+
+    async def __aexit__(self, exc_type: object, _exc: object, _tb: object) -> None:
+        if exc_type is not None and isinstance(exc_type, type):
+            self._error = exc_type.__name__
+        caller_id, caller_name = _caller_from(self._ctx)
+        duration_ms = round((time.monotonic() - self._start) * 1000, 2)
+        logger.info(
+            "tool_invoked",
+            extra={
+                "tool": self._tool,
+                "caller_id": caller_id,
+                "caller_name": caller_name,
+                "duration_ms": duration_ms,
+                "error": self._error,
+            },
+        )
+
+
+@mcp.tool()
+async def my_read_tool(some_arg: str, ctx: Context) -> dict:
+    """..."""
+    async with _LogToolCall("my_read_tool", ctx):
+        return await do_the_thing(some_arg)
+```
+
+Under byteforge-loki-logging's JSON formatter, each `extra=` field becomes a top-level key in Loki, so you can query with `{application="my-mcp-server"} | json | tool="my_read_tool"` or `... | duration_ms > 100`.
+
+#### Verification
+
+Both the uvicorn-through-root wiring and the tool instrumentation should be smoke-tested locally before deploying to a Loki-backed environment:
+
+```bash
+DEBUG_LOCAL=true \
+LOG_LEVEL=INFO \
+MCP_TRANSPORT=streamable-http \
+FASTMCP_HOST=127.0.0.1 FASTMCP_PORT=8000 \
+python -m my_mcp_package.server > /tmp/srv.log 2>&1 &
+SRV=$!
+sleep 2
+
+# Initialize, then invoke a tool with custom client-identity headers
+curl -sS -X POST http://127.0.0.1:8000/mcp \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "X-Client-ID: smoke-test" -H "X-Client-Name: SmokeTest" \
+    -d '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.1"}}}' \
+    -o /dev/null
+
+kill $SRV; wait $SRV 2>/dev/null
+
+# You should see every line formatted by byteforge-loki-logging, including:
+#   <ts> - uvicorn.error - INFO - Started server process [...]
+#   <ts> - uvicorn.error - INFO - Uvicorn running on http://127.0.0.1:8000
+#   <ts> - uvicorn.access - INFO - 127.0.0.1:... - "POST /mcp HTTP/1.1" 200
+#   <ts> - __main__ - INFO - tool_invoked
+# If `uvicorn.access` lines are formatted by uvicorn instead (look for
+# "INFO:     " with the column-aligned padding), then log_config didn't take
+# effect — re-check that you're driving uvicorn yourself, not via mcp.run().
+grep -E "(uvicorn|tool_invoked)" /tmp/srv.log
+```
+
+#### Stdio transport
+
+If your MCP server runs only over stdio (e.g. for local use with Claude Code, no HTTP), none of the above applies — there is no uvicorn at all. `configure_logging()` in `main()` followed by `mcp.run(transport="stdio")` is the complete picture. Application-level logger calls still ship to Loki via the root handler.
+
+#### Common pitfalls
+
+- `mcp.run(transport="streamable-http", log_config=...)` — does NOT exist. FastMCP's `run()` accepts only `transport` and `mount_path` as of 2026-05-18. Passing `log_config=` raises `TypeError`. You must construct `uvicorn.Config` yourself.
+- `disable_existing_loggers: True` (the default!) silently wipes byteforge-loki-logging's root setup. Always set it to `False` in your uvicorn `log_config` dict.
+- Forgetting to set `handlers: []` on uvicorn loggers. If you leave handlers at their default (`["default"]`), uvicorn's own StreamHandler stays attached AND records propagate to root — you get duplicate output. Empty list + `propagate=True` is the right combo.
+- Not adding `ctx: Context` to tool signatures. Without it, `_caller_from()` can't read the request headers and your audit logs are missing per-caller identity. FastMCP strips `Context` from the LLM-visible tool schema, so the surface to clients is unchanged.
+
 ## Troubleshooting
 
 **Logs not appearing in Loki (production):**
@@ -379,6 +593,11 @@ process.start()
 - The parent's QueueListener thread and requests.Session do not survive `fork()`. The child inherits a dead handler — logs go into a queue that nobody reads. No errors are raised.
 - Fix: call `configure_logging()` at the top of the child process target function, before any logging (see Multiprocessing section above)
 - Symptoms: parent process logs appear in Loki, but all child process logs vanish silently
+
+**MCP server logs / uvicorn access logs not appearing in Loki:**
+- `mcp.run(transport="streamable-http")` internally calls `uvicorn.Config(...)` without a `log_config` kwarg, so uvicorn falls back to its default config that attaches StreamHandlers to `uvicorn`, `uvicorn.access`, and `uvicorn.error` with `propagate=False`. Those records bypass root and never reach the byteforge-loki-logging handler.
+- Fix: drive uvicorn directly via `mcp.streamable_http_app()` + `uvicorn.Config(..., log_config={...})` (see the "MCP Server (FastMCP / uvicorn)" section above).
+- Symptoms: container is alive (MCP `initialize` handshake succeeds via `curl`), `application=<your-tag>` is completely absent from Loki, `docker logs <container>` shows uvicorn's native `INFO:     127.0.0.1:... - "POST /mcp HTTP/1.1" 200 OK` format with the column-aligned padding (rather than byteforge-loki-logging's `<ts> - <logger> - <level> - <message>` format).
 
 **Import error for byteforge_loki_logging:**
 - Ensure `CR_PAT` environment variable is set with a valid GitHub token
