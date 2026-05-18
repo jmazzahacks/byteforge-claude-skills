@@ -383,6 +383,38 @@ A skill that wires a Telegram bot webhook endpoint into a Flask service using th
 
 ---
 
+### mcp-server-nginx-gatekeeper
+
+A skill that wires a Streamable-HTTP MCP server (FastMCP or low-level SDK) into an nginx vhost behind ByteForge Gatekeeper, emitting a shared `conf.d/snippets/mcp-location.conf` so adding the fourth MCP doesn't mean copy-pasting 30 lines for the fourth time.
+
+**What it creates:**
+- `conf.d/snippets/mcp-location.conf` — shared auth/proxy/streaming snippet every MCP location `include`s
+- Per-MCP `location /mcp-<NAME>` block — 8 lines that set the upstream/port, run the three rewrites, and include the snippet
+- (Greenfield) Full umbrella `mcp.<DOMAIN>` server block — HTTP→HTTPS redirect, TLS 443, resolver, gatekeeper `/auth` include, `.well-known` bypass
+- (Brownfield, optional) Refactor of existing inline MCP location blocks down to the 8-line wrapper
+- Three smoke-test `curl` commands (auth required, OAuth bypass, authenticated request)
+- Symptom→cause→fix failure decoder mapped to the trap numbers
+
+**Features:**
+- ✅ Shared snippet eliminates 30-line duplication per MCP location
+- ✅ `.well-known/oauth-authorization-server` returns 404 (not 401) to force Claude Code onto the static bearer in `.mcp.json`
+- ✅ Three-rewrite trio (`^/mcp-<NAME>$`, `^/mcp-<NAME>/$`, `^/mcp-<NAME>/(.+)`) makes path-prefix routing survive Streamable-HTTP's absolute upstream endpoint
+- ✅ `proxy_buffering off` + 3600s read/send timeouts keep streaming connections alive
+- ✅ Variable-form `proxy_pass http://$mcp_upstream:$mcp_port` + `resolver` survives container restarts
+- ✅ Inbound `Authorization` header stripped before proxy (gatekeeper already authenticated)
+- ✅ Snippet lives under `conf.d/snippets/` to avoid nginx auto-loading it at http{} scope
+
+**Design Principles:**
+1. **Snippet over copy-paste** — invariants (auth, proxy headers, streaming) live in one file every location includes
+2. **Streamable-HTTP, not SSE** — SSE's relative `/messages/` URL breaks under path prefixes; streamable-http has no such trap
+3. **Document the traps inline** — each load-bearing decision has a comment explaining the outage it prevents
+4. **Compose with [[gatekeeper-nginx-setup]]** — `/auth` is defined once by that skill; this skill never redefines it
+5. **Brownfield-first** — most real use is "I want to add another MCP", so the skill makes that case the cheapest
+
+[View full mcp-server-nginx-gatekeeper documentation →](./skills/mcp-server-nginx-gatekeeper/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -486,7 +518,8 @@ byteforge-claude-skills/
 │   ├── python-project-scaffold/
 │   ├── gatekeeper-nginx-setup/
 │   ├── byteforge-prometheus-metrics/
-│   └── flask-telegram-bot/
+│   ├── flask-telegram-bot/
+│   └── mcp-server-nginx-gatekeeper/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```

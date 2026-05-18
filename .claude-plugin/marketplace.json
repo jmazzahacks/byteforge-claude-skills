@@ -6,12 +6,12 @@
   },
   "metadata": {
     "description": "Byteforge development skills collection",
-    "version": "1.14.1"
+    "version": "1.15.0"
   },
   "plugins": [
     {
       "name": "byteforge-skills",
-      "description": "Collection of development setup skills including PostgreSQL database setup, Python library setup, Flask REST API with OpenAPI docs and dataclass models, Flask Docker deployment, Grafana Loki logging configuration, Next.js frontend scaffolding with ByteForge Aegis authentication, ByteForge Gatekeeper nginx vhost setup, Prometheus metrics for multi-worker Python/Flask apps, and Flask Telegram bot webhook integration",
+      "description": "Collection of development setup skills including PostgreSQL database setup, Python library setup, Flask REST API with OpenAPI docs and dataclass models, Flask Docker deployment, Grafana Loki logging configuration, Next.js frontend scaffolding with ByteForge Aegis authentication, ByteForge Gatekeeper nginx vhost setup, Prometheus metrics for multi-worker Python/Flask apps, Flask Telegram bot webhook integration, and MCP server nginx vhost with Gatekeeper auth",
       "source": "./",
       "strict": true,
       "skills": [
@@ -25,7 +25,8 @@
         "./skills/python-project-scaffold",
         "./skills/gatekeeper-nginx-setup",
         "./skills/byteforge-prometheus-metrics",
-        "./skills/flask-telegram-bot"
+        "./skills/flask-telegram-bot",
+        "./skills/mcp-server-nginx-gatekeeper"
       ]
     }
   ]
