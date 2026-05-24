@@ -17,7 +17,7 @@ Use this skill when:
 
 ## What This Skill Creates
 
-1. **requirements.txt entry** - Adds `byteforge-loki-logging` dependency (private GitHub library)
+1. **requirements.txt entry** - Adds `byteforge-loki-logging` dependency (public GitHub library)
 2. **Logging initialization** - Adds `configure_logging()` call to main application file
 3. **CA certificate configuration** - Docker Compose volume mount for your Loki CA certificate
 4. **Environment variable documentation** - All required Loki configuration
@@ -42,16 +42,14 @@ Use this skill when:
 Add this line to `requirements.txt`:
 
 ```txt
-# Logging configuration with Loki support (private GitHub library)
-byteforge-loki-logging @ git+https://${CR_PAT}@github.com/jmazzahacks/byteforge-loki-logging.git
+# Logging configuration with Loki support (public GitHub library)
+byteforge-loki-logging @ git+https://github.com/jmazzahacks/byteforge-loki-logging.git
 ```
 
 Install the dependency:
 ```bash
 pip install -r requirements.txt
 ```
-
-**Note**: Requires the `CR_PAT` environment variable set to a GitHub personal access token with repo read access.
 
 ## Step 3: Configure Logging in Application
 
@@ -600,7 +598,6 @@ If your MCP server runs only over stdio (e.g. for local use with Claude Code, no
 - Symptoms: container is alive (MCP `initialize` handshake succeeds via `curl`), `application=<your-tag>` is completely absent from Loki, `docker logs <container>` shows uvicorn's native `INFO:     127.0.0.1:... - "POST /mcp HTTP/1.1" 200 OK` format with the column-aligned padding (rather than byteforge-loki-logging's `<ts> - <logger> - <level> - <message>` format).
 
 **Import error for byteforge_loki_logging:**
-- Ensure `CR_PAT` environment variable is set with a valid GitHub token
 - Run `pip install -r requirements.txt`
 - Verify installed: `pip list | grep byteforge-loki-logging`
 
