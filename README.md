@@ -415,6 +415,36 @@ A skill that wires a Streamable-HTTP MCP server (FastMCP or low-level SDK) into 
 
 ---
 
+### uv-supply-chain-hardening
+
+A skill that converts a Python project's Docker build from a loose `pip install` into a locked, hash-verified, release-age-gated install using [uv](https://github.com/astral-sh/uv) — the direct response to supply-chain attacks where a compromised maintainer account publishes a malicious package version to PyPI.
+
+**What it creates / changes:**
+- `requirements.in` — human-edited source-of-truth list of direct dependencies
+- `requirements.txt` — machine-generated, fully-pinned, `--generate-hashes` lock of the whole transitive tree
+- `pyproject.toml` — adds `[tool.uv] exclude-newer` (rolling release-age gate) and pins the build backend
+- `Dockerfile` — installs via a digest-pinned `uv` instead of pip; private-dep token becomes a build `ARG` only (never baked into the image)
+
+**Features:**
+- ✅ Three-layer defense: exact pins + per-artifact hashes + release-age gate
+- ✅ Pins to the **currently-installed** versions (via a `pip freeze` constraint), not "latest" — reproduces what you actually tested
+- ✅ Rolling `exclude-newer = "7 days"` refuses freshly-uploaded (possibly compromised) releases on both compile and install
+- ✅ Pins the whole chain — app deps, the build backend, the uv binary (by `@sha256` digest), and Git deps (by commit SHA)
+- ✅ Keeps credentials out of artifacts — build-time `ARG`, never image `ENV`, with a `docker inspect` verification step
+- ✅ Documents the `--require-hashes` / unhashable-Git-dep tradeoff so it's a conscious decision
+- ✅ Composes with [[flask-docker-deployment]], [[mcp-docker-deployment]], and [[python-lib-setup]]
+
+**Design Principles:**
+1. **Reproduce what you tested** — pin to installed versions, not latest
+2. **Make tampering detectable** — hashes on every PyPI artifact
+3. **Buy time against fresh malware** — a rolling release-age gate
+4. **Pin the whole chain** — one floating link defeats the rest
+5. **Keep credentials out of artifacts** — verify the token isn't baked into the image
+
+[View full uv-supply-chain-hardening documentation →](./skills/uv-supply-chain-hardening/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -519,7 +549,8 @@ byteforge-claude-skills/
 │   ├── gatekeeper-nginx-setup/
 │   ├── byteforge-prometheus-metrics/
 │   ├── flask-telegram-bot/
-│   └── mcp-server-nginx-gatekeeper/
+│   ├── mcp-server-nginx-gatekeeper/
+│   └── uv-supply-chain-hardening/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```

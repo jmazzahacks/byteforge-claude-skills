@@ -66,9 +66,12 @@ Create `Dockerfile` in the project root:
 ```dockerfile
 FROM python:3.13-slim
 
-# Build argument for GitHub Personal Access Token (if needed for private deps)
+# Build-time token for cloning private GitHub deps. ARG ONLY — do NOT add an
+# `ENV CR_PAT=${CR_PAT}` line. ARG makes the value available to the RUN steps
+# below (which is all that's needed for the git config trick), while ENV would
+# bake the live token into the final image's environment, where it is readable
+# by anyone who runs `docker inspect`. See Step 6 for the verification check.
 ARG CR_PAT
-ENV CR_PAT=${CR_PAT}
 
 # Install curl (for health checks) and git (for private GitHub dependencies)
 RUN apt-get update && apt-get install -y \
@@ -114,7 +117,7 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} {module}:{app}
 
 **If NO private dependencies**, remove these lines:
 ```dockerfile
-# Remove ARG CR_PAT, ENV CR_PAT, git installation, and git config commands
+# Remove ARG CR_PAT, git installation, and git config commands
 ```
 
 Simplified version without private deps:
@@ -384,6 +387,22 @@ docker run -p {port}:{port} {project}:test
 # Test the endpoint
 curl http://localhost:{port}/health
 ```
+
+### Verify the Token Did Not Leak (private deps only)
+
+The `ARG`-not-`ENV` rule above only holds if it's actually followed. Prove the
+token isn't baked into the image before publishing:
+
+```bash
+# Should print NOTHING. If it prints CR_PAT=..., the token leaked into the image —
+# go back and remove any `ENV CR_PAT=...` line from the Dockerfile.
+docker inspect {project}:test --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -i CR_PAT
+```
+
+**If a token was ever baked into a previously published image**, fixing the
+Dockerfile only stops *future* images from carrying it. Images already pushed still
+contain the token, and it stays valid until rotated. Flag this to the user and
+recommend rotating the token; let them decide.
 
 ## Design Principles
 
