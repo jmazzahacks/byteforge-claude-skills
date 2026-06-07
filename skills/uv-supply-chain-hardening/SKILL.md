@@ -33,9 +33,12 @@ The defense has three layers:
 
 1. **`requirements.in`** (NEW) — human-edited source-of-truth list of direct deps.
 2. **`requirements.txt`** (REWRITTEN) — machine-generated, fully-pinned, hashed lock.
-3. **`pyproject.toml`** — adds `[tool.uv] exclude-newer` and pins the build backend.
+3. **`pyproject.toml`** — adds `[tool.uv] exclude-newer` and pins the build backend
+   (or a root **`uv.toml`** if the repo has no `pyproject.toml`).
 4. **`Dockerfile`** — installs via a digest-pinned `uv` instead of `pip`; private-dep
-   token becomes an `ARG` only (never baked into the image).
+   token stays a build-time `ARG`/secret (never baked into the image).
+5. **`requirements-private.txt`** (NEW, *optional*) — first-party libs installed at
+   HEAD when the user wants their own libraries to always track latest (Step 5b).
 
 Nothing about the application code changes — this is purely the dependency pipeline.
 
@@ -75,6 +78,19 @@ exactly what you have installed today.
      pending fixes, pull those in and re-`pip install` _before_ freezing, so the
      lock captures the intended versions.
 
+4. **"Should your own private libraries be pinned, or always track latest?"**
+   - A common, legitimate stance: pin the **third-party** attack surface, but let
+     your **first-party** libs (the ones requiring a token) float to the latest
+     commit on every build — you review your own code and want fixes without a
+     manual SHA bump. If they choose this, those libs do **not** get pinned in the
+     lock; they go in a separate `requirements-private.txt` installed at HEAD. See
+     **Step 5b** — it changes Steps 1, 2, and 4.
+
+5. **"What Python version does the *container* run?"**
+   - You must compile the lock for the container's Python (`--python-version`), not
+     your laptop's. A local 3.14 venv resolving for a 3.13 image picks different
+     wheels/markers. Read it off the `FROM python:X.Y` line.
+
 ---
 
 ## Step 1: Create `requirements.in` (source of truth)
@@ -113,6 +129,19 @@ internal-lib @ git+https://${CR_PAT}@github.com/your-org/internal-lib.git@<commi
 > hash in the lock (see Step 5). The commit SHA _is_ the hash — it's the only thing
 > anchoring the integrity of a Git dependency, so it is non-negotiable for these.
 
+> **⚠️ Token-baking via a library's OWN `pyproject.toml` (the subtle leak — check
+> this every time).** Distinct from the Dockerfile `ENV` leak in Step 4/6. If one of
+> your private libraries declares its *own* dependencies as
+> `git+https://{env:CR_PAT}@github.com/...` (the hatch `{env:...}` context form),
+> **hatchling expands the token at build time into the wheel's `Requires-Dist`
+> metadata** — so a live PAT gets frozen into every image built from that lib, even
+> with a flawless Dockerfile. `${VAR}` in a *requirements* file is fine (that file is
+> never packaged); `{env:VAR}` inside a *package's* `[project.dependencies]` is not.
+> **Fix the library:** declare its deps with token-free URLs
+> (`git+https://github.com/...`) and let git `insteadOf` supply auth at install —
+> this stays compatible with unpinned/always-latest deps. Then **rotate the PAT**,
+> since older built images still carry it. Scan for it in Step 6.
+
 ---
 
 ## Step 2: Compile the Locked, Hashed `requirements.txt`
@@ -120,17 +149,25 @@ internal-lib @ git+https://${CR_PAT}@github.com/your-org/internal-lib.git@<commi
 Compile from `requirements.in`, constrained to the installed versions, with hashes:
 
 ```bash
+# A raw `pip freeze` includes VCS/editable lines (`pkg @ git+...`, `-e ...`,
+# `pkg @ file://...`) that uv rejects as constraints — keep only `name==version`:
+grep -E '^[A-Za-z0-9._-]+==[0-9]' /tmp/installed-constraints.txt > /tmp/constraints.txt
+
 uv pip compile requirements.in \
   --generate-hashes \
-  -c /tmp/installed-constraints.txt \
+  --python-version 3.13 \
+  -c /tmp/constraints.txt \
   -o requirements.txt
 ```
 
 - `--generate-hashes` → writes a SHA256 (often several, one per wheel/sdist) for
   every PyPI distribution. This is what makes registry tampering detectable.
-- `-c /tmp/installed-constraints.txt` → **pins to the versions you already have
-  installed** rather than resolving to latest. This is the step people forget; without
-  it the lock can leap forward across untested releases.
+- `--python-version <X.Y>` → **resolve for the Python the container runs, not your
+  laptop's.** Compiling under a different interpreter (local 3.14, image 3.13) can
+  select different wheels/markers. Match the `FROM python:X.Y` in the Dockerfile.
+- `-c /tmp/constraints.txt` → **pins to the versions you already have installed**
+  rather than resolving to latest. This is the step people forget; without it the
+  lock can leap forward across untested releases.
 - The output is the full transitive tree, every package pinned to `==` with hashes.
 
 **Verify the pin matched the baseline.** Diff the new pins against what you had:
@@ -174,6 +211,16 @@ exclude-newer = "7 days"
   Prefer the duration: it's a **rolling** gate that keeps working on every future
   build, whereas a fixed timestamp goes stale.
 - Replace `7 days` with the answer from Step 0.
+
+> **No `pyproject.toml`? (a Flask/service repo, not a package.)** Put the setting in
+> a **`uv.toml`** at the repo root instead — uv reads it for both compile and
+> install. In `uv.toml` the keys are top-level (no `[tool.uv]` table):
+> ```toml
+> # uv.toml
+> exclude-newer = "7 days"
+> ```
+> And **skip part (b)** below — a repo that never builds a wheel has no build backend
+> to pin.
 
 **(b) Pin the build backend** under `[build-system]` — otherwise the backend itself
 (e.g. hatchling/setuptools) is an unpinned dependency resolved at wheel-build time,
@@ -245,6 +292,20 @@ RUN uv pip install --system --no-deps .
   verification step below.
 - If the project has **no private deps**, drop the `ARG CR_PAT` line and `git` from
   the apk install.
+- **Prefer a BuildKit secret over `ARG` when the build supports it.** `ARG CR_PAT`
+  passed via `--build-arg` is recorded in `docker history` and can surface in build
+  logs; a secret mount never touches a layer at all:
+  ```dockerfile
+  RUN --mount=type=secret,id=cr_pat \
+      export CR_PAT=$(cat /run/secrets/cr_pat) \
+      && git config --global url."https://${CR_PAT}@github.com/".insteadOf "https://github.com/" \
+      && uv pip install --system -r requirements.txt \
+      && git config --global --unset url."https://${CR_PAT}@github.com/".insteadOf
+  ```
+  Build with `docker build --secret id=cr_pat,env=CR_PAT ...`. The `insteadOf`
+  rewrite means your requirements/lock can use **token-free** `https://github.com/`
+  URLs — no credential in any committed file. If an existing `build-publish.sh`
+  already passes `--secret`, keep that interface (don't regress it to `ARG`).
 
 ---
 
@@ -274,6 +335,80 @@ RUN uv pip install --system -r /app/requirements-git.txt
 
 ---
 
+## Step 5b: First-Party Libraries That Should Track Latest (the `--override` split)
+
+Use this **only if the user chose "always track latest" for their own libs** in
+Step 0. The default model pins everything; this variant pins the **third-party**
+attack surface but lets **first-party** libs float to the latest commit on every
+build.
+
+**Why a plain compile won't do it — two uv behaviors collide:**
+
+1. **uv resolves the *entire* graph; pip deduped by name.** pip tolerated your
+   private libs declaring each other with `{env:CR_PAT}`/unpinned URLs because the
+   top-level requirement already "satisfied" them. uv actually fetches each
+   transitive git URL from a library's metadata — and if it uses `{env:CR_PAT}` (uv
+   can't expand it) or floats to `HEAD` (conflicting with a top-level pin), the
+   compile fails with an auth or URL-conflict error.
+2. uv pins a git dep to its **resolved HEAD commit** in the output even when the
+   input had no SHA — so a single lock would freeze your first-party libs to
+   compile-time HEAD, defeating "always latest."
+
+**The split that solves both:**
+
+`requirements-private.txt` — first-party libs, **token-free and unpinned**. Used
+twice: as the `--override` for the compile *and* as the install list in Docker.
+```
+internal-core @ git+https://github.com/your-org/internal-core.git
+internal-models @ git+https://github.com/your-org/internal-models.git
+```
+
+`requirements.in` — third-party direct deps **plus** the private libs (token-free),
+so the compile discovers and locks their third-party sub-tree. The private lines are
+stripped from the output afterward.
+
+Compile (token injected only into git's process config, never a committed file):
+```bash
+export GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="url.https://${CR_PAT}@github.com/.insteadOf" \
+  GIT_CONFIG_VALUE_0="https://github.com/"
+uv pip compile requirements.in \
+  --override requirements-private.txt \
+  --generate-hashes --python-version 3.13 \
+  -c /tmp/constraints.txt \
+  -o requirements.full.txt
+# Strip the first-party git lines → requirements.txt holds only the locked, hashed
+# third-party tree (their PyPI sub-deps stay; the private libs themselves do not).
+grep -vE '^(internal-core|internal-models) @ git\+' requirements.full.txt > requirements.txt
+rm requirements.full.txt
+```
+- `--override requirements-private.txt` forces uv to resolve those packages from
+  your token-free URLs instead of the `{env:CR_PAT}@HEAD` ones in their metadata.
+- Note any **transitive public git deps** that remain in the lock (e.g. a logging
+  lib pulled from GitHub) — they're unhashable, which is why `--require-hashes`
+  needs the Step 5 split. Leave them in `requirements.txt` so the `--no-deps`
+  install below can satisfy them.
+
+Dockerfile — two installs:
+```dockerfile
+RUN uv pip install --system -r requirements.txt                                # pinned + hashed third-party
+RUN uv pip install --system --no-config --no-deps -r requirements-private.txt  # first-party at HEAD
+```
+- `--no-deps` because every sub-dep is already installed + locked by step 1.
+- `--no-config` so `exclude-newer` (uv.toml) can't reject a first-party commit
+  pushed within the gate window — you *want* the newest first-party commit. Without
+  it, a lib commit younger than the gate fails the build.
+
+**⚠️ The cache trap (bites every rebuild).** A `RUN uv pip install ... requirements-private.txt`
+layer is cached on the command string + the file's contents — neither changes when
+the upstream branch moves, so Docker **silently reuses the old commit** and "always
+latest" quietly becomes "whatever was latest the first time." To actually pull the
+newest first-party code you must `docker build --no-cache` (or bust the cache above
+that layer, e.g. an `ARG GIT_REV` passed each build). This is also why, right after
+merging a fix to a first-party lib, the next publish must be `--no-cache`.
+
+---
+
 ## Step 6: Verify the Build — and That the Token Did Not Leak
 
 Do a clean, no-cache build to prove the locked install works end to end:
@@ -294,7 +429,20 @@ docker inspect app:test --format '{{range .Config.Env}}{{println .}}{{end}}' | g
 
 # Belt-and-suspenders: scan the whole image filesystem history for the token value.
 docker history --no-trunc app:test | grep -i cr_pat || echo "clean"
+
+# CRITICAL: scan installed package METADATA for a baked token. This catches the
+# {env:CR_PAT} library-metadata leak (Step 1 callout) that the ENV and history
+# checks above completely miss — the token lives in a .dist-info/METADATA file,
+# not the image config. Should print nothing.
+docker run --rm --entrypoint sh app:test -c \
+  'grep -rl "ghp_\|github_pat_" /usr/local/lib/python*/site-packages/*.dist-info/METADATA 2>/dev/null' \
+  || echo "no token in metadata"
 ```
+
+> **Verify the *published* image, not just the local build.** After
+> `build-publish.sh` pushes, `docker rmi` the tag, `docker pull` it fresh, and
+> re-run the scans above against the pulled image. A warm build/layer cache can mask
+> a stale or token-bearing layer that only the registry copy reveals.
 
 > **If a token was ever exposed** (printed to a terminal, or baked into a previously
 > published image via the old `ENV` line), fixing the Dockerfile only stops _future_
@@ -326,6 +474,28 @@ These are the non-obvious things that cost time the first time through:
    split. (Step 1/5.)
 7. **Pin the uv binary by digest, not just tag** — it's the root of trust for the
    whole install. (Step 4.)
+8. **`{env:CR_PAT}` in a library's own pyproject bakes the PAT into its wheel
+   metadata.** hatchling expands it at build time into `Requires-Dist`, so the token
+   ships in every image — invisible to env/history checks. Scan
+   `*.dist-info/METADATA`, fix the lib to token-free URLs, rotate the PAT. (Step
+   1/6.)
+9. **uv resolves the whole graph; pip dedups by name.** A private lib that declares
+   its own `{env:CR_PAT}`/unpinned deps will fail or conflict the compile. Use
+   `--override` to force those packages to your chosen source. (Step 5b.)
+10. **uv pins git deps to a resolved commit even from a no-SHA input.** A single lock
+    therefore freezes first-party libs to compile-time HEAD — split them out and
+    install `--no-deps` at HEAD if you want always-latest. (Step 5b.)
+11. **Docker caches HEAD git installs.** The `requirements-private.txt` install layer
+    reuses the old commit until you `--no-cache` (or cache-bust). "Always latest"
+    silently rots otherwise — and a just-merged lib fix won't ship without it. (Step
+    5b.)
+12. **Compile for the container's Python, not your laptop's.** `--python-version X.Y`
+    matching `FROM python:X.Y`, or you lock the wrong wheels/markers. (Step 0/2.)
+13. **A raw `pip freeze` breaks `-c`.** Strip VCS/editable/`file://` lines (keep only
+    `name==version`) before using it as a constraints file. (Step 2.)
+14. **`exclude-newer` gates installs too — including first-party HEAD.** A first-party
+    commit younger than the gate fails the build; run that install with `--no-config`.
+    (Step 5b.)
 
 ---
 
