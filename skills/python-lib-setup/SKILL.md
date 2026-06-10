@@ -40,13 +40,14 @@ Use this skill when:
 
 3. **"What is your name?"** (for author field)
 
-4. **"What is your email?"** (for author field)
+4. **"What is your email?"** (for author field — **only ask this if the answer to question 6 is `GitHub private`**. PyPI metadata and public GitHub repos are publicly browsable, so embedding the author email there exposes it to scrapers. For those, omit the email entirely; capture name only.)
 
 5. **"What is your GitHub username?"** (for project URLs)
 
-6. **"Will this package be published to PyPI or installed from GitHub?"**
-   - **PyPI** — Public package registry. Includes build/twine tooling and a publish script.
-   - **GitHub** — Private library installed via `git+https://` URL. Skips PyPI-specific artifacts (build, twine, build-publish.sh).
+6. **"How will this package be distributed?"** (one of three; this drives both the tooling AND whether the author email is embedded)
+   - **PyPI** — Public package registry. Includes build/twine tooling and a publish script. **Email omitted from `authors` and README** (PyPI metadata is public).
+   - **GitHub public** — Public repo, installed via `git+https://` URL. No PyPI artifacts. **Email omitted from `authors` and README** (repo is publicly browsable).
+   - **GitHub private** — Private repo, installed via `git+https://${CR_PAT}@...` URL. No PyPI artifacts. **Email included** (only readers with repo access see it).
 
 7. **"What license do you want to use?"** (options: Proprietary, MIT, O'Saasy)
    - **Proprietary**: All rights reserved, no open source distribution
@@ -78,7 +79,7 @@ Create `pyproject.toml` with the following structure, **substituting project-spe
 name = "{project-name}"
 version = "0.0.1"
 authors = [
-  { name="{author_name}", email="{author_email}" },
+  { name="{author_name}", email="{author_email}" },   # GitHub PRIVATE only — see note below
 ]
 description = "{project_description}"
 keywords = [{keywords_list}]
@@ -110,7 +111,7 @@ Issues = "https://github.com/{github_username}/{project-name}/issues"
 - `{project-name}` → project name with hyphens (e.g., `pg-podcast-toolkit`)
 - `{package_name}` → package name with underscores (e.g., `pg_podcast_toolkit`)
 - `{author_name}` → author's name
-- `{author_email}` → author's email
+- `{author_email}` → author's email — **only when distribution is `GitHub private`**. For `PyPI` and `GitHub public`, drop the `, email="..."` half and write the entry as `{ name="{author_name}" }` (PEP 621 allows the `email` field to be omitted; it must not be left blank or set to a placeholder, just omit the key).
 - `{project_description}` → one-line description
 - `{keywords_list}` → comma-separated quoted keywords (e.g., `"podcasting", "rss", "parser"`) or empty
 - `{python_version}` → minimum Python version (e.g., `3.8`)
@@ -464,8 +465,12 @@ pip install -e .
 
 ## Author
 
-{author_name} ({author_email})
+{author_name}
 ```
+
+> The Author line above is `{author_name}` only — PyPI READMEs render publicly on
+> pypi.org, so the email is intentionally omitted. (Same rule as the `pyproject.toml`
+> `authors` block in Step 3.)
 
 **If distribution is GitHub:**
 
@@ -530,6 +535,12 @@ pip install -e .
 
 {author_name} ({author_email})
 ```
+
+> **Author line rule for the GitHub template above:**
+> - **GitHub private** → keep as shown: `{author_name} ({author_email})`.
+> - **GitHub public** → drop the email parens; write `{author_name}` only. Public
+>   GitHub READMEs are scraped, and the email was never collected in this branch
+>   anyway (see Step 1, question 4).
 
 ## Step 10: Make Script Executable (PyPI only)
 
