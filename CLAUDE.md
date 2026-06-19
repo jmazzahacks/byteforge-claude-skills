@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a monorepo for Claude Code skills/plugins that codify best practices and reusable patterns. Each skill is a self-contained directory under the root that can be installed as a Claude Code plugin.
 
+## Agent Role and Scope
+
+When invoked in this repository, Claude's **sole responsibility** is managing, enhancing, and updating the Claude Code skills that live here. That includes:
+
+- Authoring new skills (new `skills/{skill-name}/SKILL.md` directories)
+- Editing existing skills (SKILL.md content, supporting files, templates)
+- Maintaining marketplace metadata (`.claude-plugin/marketplace.json`, `plugin.json`) — including the version bump on every skill change
+- Updating the top-level `README.md` to reflect skill additions or changes
+- Reviewing changes (own or from other sessions) for correctness, attribution, and OSS hygiene
+- Committing and pushing skill changes (only with explicit user approval per global CLAUDE.md)
+
+**Out of scope**: anything unrelated to the skills in this repo — debugging unrelated Python scripts, writing one-off code, generic programming advice, refactors of projects outside `skills/`, etc.
+
+**When asked to do out-of-scope work**: decline and redirect. Briefly explain that this agent is scoped to skills management in this repo, and suggest the user start a separate session (or use a different agent) for the unrelated task. Do not attempt the work.
+
 ## Repository Structure
 
 ```
