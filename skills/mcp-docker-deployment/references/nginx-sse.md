@@ -1,4 +1,6 @@
-# Nginx Reverse Proxy for MCP SSE Transport
+# Nginx Reverse Proxy for MCP (Streamable-HTTP or SSE)
+
+This config block works cleanly for **both** transports — the streaming-friendly settings (`proxy_buffering off`, long `proxy_read_timeout`) are still useful for streamable-http's optional server→client streaming responses, and required for SSE's long-lived GET.
 
 ## Location Block
 
@@ -62,5 +64,5 @@ Standard nginx HTTPS config works. SSE and streamable-http both work over HTTPS 
 ## Client URL
 
 With this nginx config, the Claude Code `.mcp.json` URL would be:
-- SSE: `https://server.example.com/{mcp_path}/sse`
-- Streamable-http: `https://server.example.com/{mcp_path}/mcp`
+- Streamable-http (recommended): `https://server.example.com/{mcp_path}/mcp`
+- SSE (legacy): `https://server.example.com/{mcp_path}/sse`

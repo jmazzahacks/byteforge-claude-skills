@@ -1,11 +1,21 @@
 ---
 name: mcp-docker-deployment
-description: Set up Docker deployment for Python MCP servers (FastMCP or low-level mcp.server.Server SDK) with SSE/streamable-http transport, automated versioning, and container registry publishing. Use when dockerizing an MCP server, containerizing for remote access, deploying an MCP server behind nginx, or setting up a production MCP server with Docker. Covers Dockerfile, build scripts, docker-compose, and nginx reverse proxy for SSE streaming.
+description: Set up Docker deployment for Python MCP servers (FastMCP or low-level mcp.server.Server SDK) with streamable-http transport (preferred) or legacy SSE, automated versioning, and container registry publishing. Use when dockerizing an MCP server, containerizing for remote access, deploying an MCP server behind nginx, or setting up a production MCP server with Docker. Covers Dockerfile, build scripts, docker-compose, and nginx reverse proxy.
 ---
 
 # MCP Docker Deployment
 
-Containerize Python MCP servers (FastMCP or low-level SDK) for remote deployment with SSE or streamable-http transport, nginx reverse proxy with HTTPS, and GHCR publishing.
+Containerize Python MCP servers (FastMCP or low-level SDK) for remote deployment with streamable-http transport (preferred) or legacy SSE, nginx reverse proxy with HTTPS, and GHCR publishing.
+
+## Transport choice — default to streamable-http
+
+**Always pick `streamable-http` with `stateless_http=True` unless you have a specific reason to use SSE.** SSE has a wedge bug class with Claude Code as the client: when the long-lived SSE GET dies (container restart, network blip, idle close), Claude Code's MCP client auto-reconnects but does NOT re-run the `initialize` handshake. The new server-side session sees `tools/call` before `initialize`, raises `RuntimeError("Received request before initialization was complete")`, and the SDK's catch-all converts it to a generic `-32602 "Invalid request parameters"`. Claude Code treats `-32602` as unrecoverable; every subsequent call returns the same error until the user manually `/mcp` reloads.
+
+Streamable-http with `stateless_http=True` has no per-session state to lose — every POST stands alone. The bug class is structurally impossible on this transport.
+
+References: [anthropics/claude-code#60061](https://github.com/anthropics/claude-code/issues/60061) (open upstream issue tracking the wedge on the SSE side; multiple independent reporters, same diagnosis, same workaround).
+
+Pick `sse` ONLY if you have a non-Claude-Code MCP client that explicitly requires it (rare).
 
 ## Step 1: Gather Project Information
 
@@ -13,7 +23,7 @@ Ask the user:
 
 1. **"What is your MCP server entry point file?"** (e.g., `my_mcp_server.py`)
 2. **"Does your server use FastMCP (`mcp.server.fastmcp.FastMCP`) or the low-level SDK (`mcp.server.Server`)?"**
-3. **"Which transport? `sse` or `streamable-http`?"** (They are NOT interchangeable — different endpoints, different SDK classes)
+3. **"Confirm transport: `streamable-http` (recommended, default) or `sse` (legacy)?"** — default to `streamable-http`. Only use `sse` if a non-Claude-Code client explicitly requires it. See the "Transport choice" section above for why. (Note: the two are NOT interchangeable — different endpoints, different SDK classes.)
 4. **"What Python files/directories need to be copied into the container?"** (e.g., `tools/`, `models/`, `formatting.py`)
 5. **"What container registry URL?"** (e.g., `ghcr.io/{org}/{project}`)
 6. **"Does the MCP server need any environment variables?"** (list them for docker-compose and example.env)
@@ -41,7 +51,7 @@ USER appuser
 EXPOSE 8000
 
 # Transport for Docker, bind to all interfaces
-ENV MCP_TRANSPORT=sse
+ENV MCP_TRANSPORT=streamable-http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8000
 
@@ -89,12 +99,12 @@ if __name__ == "__main__":
 
 **CRITICAL**: Without explicit `host`/`port` args, the container binds to `127.0.0.1` and is unreachable despite `FASTMCP_HOST=0.0.0.0` being set. This is because FastMCP's pydantic-settings defaults take precedence over env vars when constructor args are provided.
 
-**CRITICAL**: `stateless_http=True` is required when running behind a reverse proxy (nginx). Without it, the server tracks sessions via `Mcp-Session-Id` headers. If the proxy drops that header or the SSE connection breaks, clients get `"Session not found"` errors. Stateless mode makes each request independent, which is the correct mode for containerized deployments behind a proxy.
+**CRITICAL**: `stateless_http=True` is required for `streamable-http` to actually be stateless (it has no effect on `sse`, which has its own per-connection state). Without it, the server tracks sessions via `Mcp-Session-Id` headers; if the proxy drops that header or the connection breaks, clients get `"Session not found"` errors. The combination of `streamable-http` AND `stateless_http=True` is what makes the SSE wedge bug class (see "Transport choice" above) structurally impossible — every POST stands alone, with no per-session handshake state to lose.
 
 Supported transports:
-- `stdio` - Local development (Claude Code local MCP servers)
-- `sse` - Server-Sent Events, works behind nginx reverse proxy
-- `streamable-http` - Newer HTTP transport
+- `stdio` — Local development (Claude Code local MCP servers)
+- `streamable-http` — **Recommended.** Single `/mcp` endpoint, supports `stateless_http=True`, avoids the SSE wedge bug class.
+- `sse` — Legacy. Two-endpoint protocol (`/sse` + `/messages/`). Wedge-prone with Claude Code; use only if forced by client compatibility.
 
 ### Path B: Low-level SDK (`mcp.server.Server`)
 
@@ -322,7 +332,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      MCP_TRANSPORT: sse
+      MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: 8000
       # Add all app-specific env vars from example.env
@@ -337,10 +347,10 @@ Include **all** environment variables from the project's example.env.
 ## Step 7: Create example.env
 
 ```bash
-# MCP transport: "stdio" for local dev, "sse" or "streamable-http" for Docker/remote
-MCP_TRANSPORT=sse
+# MCP transport: "stdio" for local dev; "streamable-http" (recommended) or "sse" (legacy) for Docker/remote
+MCP_TRANSPORT=streamable-http
 
-# MCP network settings (used with SSE/streamable-http transport)
+# MCP network settings (used with streamable-http or sse transport)
 # MCP_HOST=0.0.0.0
 # MCP_PORT=8000
 
@@ -358,16 +368,16 @@ Add `VERSION` and `.env` entries.
 
 ## Step 9: Nginx Reverse Proxy (if applicable)
 
-If the MCP server will be behind nginx with HTTPS, see [references/nginx-sse.md](references/nginx-sse.md) for the config snippet. SSE requires specific proxy settings to work correctly.
+If the MCP server will be behind nginx with HTTPS, see [references/nginx-sse.md](references/nginx-sse.md) for the config snippet. The same `location` block works cleanly for **both** transports — `proxy_buffering off` plus long `proxy_read_timeout` are still useful for streamable-http's optional server→client streaming responses.
 
 ## MCP Endpoints
 
-SSE transport exposes:
+Streamable-http (recommended) exposes:
+- `/mcp` - Single endpoint (POST for requests, optional GET for server→client streams)
+
+SSE (legacy) exposes:
 - `/sse` - SSE connection endpoint
 - `/messages/` - Message posting endpoint
-
-Streamable-http transport exposes:
-- `/mcp` - Single endpoint
 
 ## Claude Code Client Configuration
 
@@ -378,7 +388,7 @@ Connect to a remote MCP server in `.mcp.json`:
   "mcpServers": {
     "my-mcp": {
       "type": "http",
-      "url": "https://server.example.com/my-mcp/sse",
+      "url": "https://server.example.com/my-mcp/mcp",
       "headers": {
         "Authorization": "Bearer <token>"
       }
@@ -393,7 +403,7 @@ Auth is handled at the nginx layer via Bearer token headers. The MCP server does
 
 **Container binds to 127.0.0.1 instead of 0.0.0.0 (FastMCP)** - FastMCP constructor defaults override env vars. Pass host/port explicitly in the FastMCP constructor (see Step 3, Path A).
 
-**SSE connection stale after container restart** - Claude Code caches SSE connections. Reload Claude Code to establish a fresh connection.
+**SSE connection stale / wedged after container restart or network blip** - When Claude Code's SSE GET dies, it auto-reconnects but does NOT re-run the `initialize` handshake; the new server-side session sees `tools/call` before `initialize`, the SDK raises `RuntimeError("Received request before initialization was complete")`, and the wire-level error becomes a generic `-32602 "Invalid request parameters"`. Claude Code treats `-32602` as unrecoverable and stays wedged on every subsequent call. Workaround: `/mcp` reload in Claude Code to force a fresh handshake. Real fix: migrate to `streamable-http` with `stateless_http=True` — that's exactly what this bug class needs (see "Transport choice" near the top). Upstream issue: [anthropics/claude-code#60061](https://github.com/anthropics/claude-code/issues/60061).
 
 **PyPI package version stale in Docker image** - Publish the new version to PyPI before running build-publish.sh. Verify with `docker exec {container} pip show {package}`.
 
@@ -401,4 +411,4 @@ Auth is handled at the nginx layer via Bearer token headers. The MCP server does
 
 **Wrong transport route (low-level SDK)** - SSE uses `/sse` and `/messages/`, streamable-http uses `/mcp`. These are NOT interchangeable. Make sure the client URL matches the transport configured on the server.
 
-**"Session not found" errors behind nginx** - The MCP SDK's streamable-http transport is stateful by default. During initialization, the server assigns a session ID and expects the client to send it back via the `Mcp-Session-Id` header on every request. Behind a reverse proxy, this header can be dropped or the SSE connection that maintains the session can be interrupted, causing `"Session not found"` errors. Fix: set `stateless_http=True` (FastMCP) or `stateless=True` (low-level SDK `StreamableHTTPSessionManager`). This disables session tracking so each request is handled independently.
+**"Session not found" errors behind nginx** - The MCP SDK's streamable-http transport is stateful by default. During initialization, the server assigns a session ID and expects the client to send it back via the `Mcp-Session-Id` header on every request. Behind a reverse proxy, this header can be dropped or the SSE connection that maintains the session can be interrupted, causing `"Session not found"` errors. Fix: set `stateless_http=True` (FastMCP) or `stateless=True` (low-level SDK `StreamableHTTPSessionManager`). This disables session tracking so each request is handled independently. See the "Transport choice" section near the top — streamable-http + stateless is the recommended default for exactly this reason.
