@@ -7,3 +7,4 @@
 
 # Claude local
 .claude/
+.mcp.json
