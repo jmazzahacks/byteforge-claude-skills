@@ -38,7 +38,7 @@ Use this skill when:
    - Each feature will become a blueprint
 
 3. **"Do you need database integration?"** (yes/no)
-   - If yes, reference postgres-setup skill for database layer
+   - If yes, reference the `postgres-setup` skill for the database layer. **Use its Step 7 ("Create Resilient Database Driver") to scaffold `src/{project_name}/database.py`** — the singleton manager below imports `Database` from that exact path. The resilient pattern (pre-ping + retry + mid-flight death detection) is what keeps the Flask process from wedging when Postgres restarts; the naïve `ThreadedConnectionPool` pattern returns 500s on every request until the process restarts.
 
 4. **"What port should the server run on?"** (default: 5000)
 
@@ -334,7 +334,8 @@ class ServiceManager:
             Database connection instance (lazy initialization)
         """
         if self._db is None:
-            # Import database driver
+            # Import database driver — see postgres-setup Step 7 for the
+            # resilient implementation (pre-ping + retry; survives PG restart).
             from src.{project_name}.database import Database
 
             # Get connection parameters from environment
@@ -519,6 +520,8 @@ If database is needed, use **postgres-setup** skill first:
 ```
 User: "Set up postgres database for my project"
 ```
+
+**Important**: When running `postgres-setup`, also follow its **Step 7 ("Create Resilient Database Driver")** to scaffold `src/{project_name}/database.py`. The singleton manager above imports `Database` from that path. Skipping Step 7 and using a naïve `ThreadedConnectionPool` will wedge the Flask process every time Postgres restarts.
 
 Then reference the database in your blueprints via the singleton manager:
 ```python

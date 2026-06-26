@@ -257,161 +257,166 @@ Run:
 chmod +x dev_scripts/setup_database.py
 ```
 
-## Step 7: Create Database Driver (Optional but Recommended)
+## Step 7: Create Resilient Database Driver (Recommended for any long-running Python process)
 
-If the project needs a database driver/connection manager, create one following this pattern:
+For any project with a long-running Python process (Flask app, background worker, daemon), create a database driver that **survives upstream Postgres restarts**. The naïve pattern — `ThreadedConnectionPool.getconn()` straight into a query — wedges the entire process the moment Postgres goes away, because the pool happily hands out dead sockets and `getconn()` does zero health checking. Every request returns `OperationalError: server closed the connection unexpectedly` until the process is restarted.
 
-### File: `src/{project_name}/driver/database.py`
+The pattern below is production-tested: in one incident, an upstream Postgres restart left a naïve pool holding corpses for ~50 minutes until a manual deploy shipped a fix. With this pattern in place, the same situation self-heals in a handful of requests.
 
-**Key patterns to follow:**
+**Stack scope**: psycopg2 (sync). For asyncpg / SQLAlchemy / other drivers, you need a different pattern — this one does not translate.
 
-1. **Connection Pooling with TCP Keepalives**: Use `ThreadedConnectionPool` from psycopg2 with TCP keepalives to detect dead connections
-   ```python
-   from psycopg2.pool import ThreadedConnectionPool
+### Why a naïve pool wedges
 
-   self.pool = ThreadedConnectionPool(
-       min_conn,  # e.g., 2
-       max_conn,  # e.g., 10
-       host=db_host,
-       database=db_name,
-       user=db_user,
-       password=db_passwd,
-       keepalives=1,
-       keepalives_idle=30,
-       keepalives_interval=10,
-       keepalives_count=5,
-   )
-   ```
-   TCP keepalives send probes after 30s idle, every 10s, and declare dead after 5 failures (~80s). Without this, the OS won't detect silently dropped connections for hours.
+`psycopg2.pool.ThreadedConnectionPool` (and `SimpleConnectionPool`) treat every connection as alive until proven otherwise. If Postgres restarts or kicks an idle connection:
+- Every pooled socket becomes a dead FD.
+- `pool.getconn()` returns one anyway.
+- The first query raises `psycopg2.OperationalError` / `psycopg2.InterfaceError`.
+- The caller usually does plain `pool.putconn(conn)` on cleanup — which puts the **dead** conn right back into the pool for the next caller. Pool never self-heals.
 
-2. **Health Check Before Yielding Connections**: Pooled connections can go stale if PostgreSQL closes idle connections (server timeout, network issue, PG restart). `SimpleConnectionPool`/`ThreadedConnectionPool` do zero health checking — they hand out dead connections. Always run `SELECT 1` before yielding:
-   ```python
-   def _is_connection_alive(self, conn) -> bool:
-       try:
-           conn.cursor().execute("SELECT 1")
-           conn.rollback()
-           return True
-       except (psycopg2.OperationalError, psycopg2.InterfaceError):
-           return False
-   ```
+The fix has two parts:
+1. **Pre-ping** every checkout with `SELECT 1`. If it fails, discard with `putconn(close=True)` (the pool refills with a fresh socket) and retry up to `MAX_HEALTH_RETRIES` times.
+2. **Discard mid-flight deaths**. If the caller's query raises a dead-conn error inside the yielded body, do `putconn(close=True)` rather than plain `putconn`, so the corpse leaves the pool instead of being recycled.
 
-3. **Context Managers with Safe Error Handling**: Provide context managers for connections and cursors. The error handler must handle dead connections — `rollback()` and `putconn()` can both throw on a dead connection, causing confusing double-exceptions if not caught:
-   ```python
-   @contextmanager
-   def get_connection(self):
-       conn = None
-       try:
-           conn = self.pool.getconn()
-           if not self._is_connection_alive(conn):
-               self.pool.putconn(conn, close=True)
-               conn = self.pool.getconn()
-           yield conn
-           conn.commit()
-       except Exception:
-           if conn:
-               try:
-                   conn.rollback()
-               except (psycopg2.OperationalError, psycopg2.InterfaceError):
-                   pass
-           raise
-       finally:
-           if conn:
-               try:
-                   self.pool.putconn(conn)
-               except Exception:
-                   try:
-                       conn.close()
-                   except Exception:
-                       pass
+A short retry budget (3) is enough to drain a pool full of corpses on the first request after Postgres comes back up, without spinning forever if Postgres is genuinely down.
 
-   @contextmanager
-   def get_cursor(self, commit: bool = True, cursor_factory=None):
-       """Context manager for database cursors with automatic commit/rollback"""
-       with self.get_connection() as conn:
-           cursor = conn.cursor(cursor_factory=cursor_factory)
-           try:
-               yield cursor
-               if commit:
-                   conn.commit()
-           except Exception:
-               try:
-                   conn.rollback()
-               except (psycopg2.OperationalError, psycopg2.InterfaceError):
-                   pass
-               raise
-           finally:
-               cursor.close()
-   ```
+### File location
 
-3. **Always Use RealDictCursor for Loading Data**: When reading from database, use RealDictCursor
-   ```python
-   from psycopg2.extras import RealDictCursor
+For a project that also uses the `flask-smorest-api` skill, place this at:
+```
+src/{project_name}/database.py
+```
+That's the path `flask-smorest-api`'s singleton manager imports from (`from src.{project_name}.database import Database`). For other layouts, put it wherever your application code can `import Database`.
 
-   with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
-       cursor.execute("SELECT * FROM table WHERE id = %s", (id,))
-       result = cursor.fetchone()
-       return Model.from_dict(dict(result))
-   ```
+### Template — `database.py`
 
-4. **Unix Timestamps Everywhere**: Convert database timestamps to/from unix timestamps
-   ```python
-   # When saving to DB - store as BIGINT
-   created_at = int(time.time())
-
-   # When loading from DB - already BIGINT, use as-is
-   # In models, store as int (unix timestamp)
-   # Only convert to datetime for display/formatting purposes
-   ```
-
-5. **Proper Cleanup**: Ensure pool is closed on destruction
-   ```python
-   def close(self):
-       if self.pool and not self.pool.closed:
-           self.pool.closeall()
-
-   def __del__(self):
-       if hasattr(self, 'pool'):
-           self.close()
-   ```
-
-### Example Driver Structure:
 ```python
-class {ProjectName}DB:
-    def __init__(self, db_host: str, db_name: str, db_user: str, db_passwd: str,
-                 min_conn: int = 2, max_conn: int = 10):
+"""
+Resilient PostgreSQL connection pool.
+
+Wraps psycopg2.pool.ThreadedConnectionPool with:
+  - TCP keepalives so the OS detects silently dropped connections.
+  - Pre-ping (`SELECT 1`) before every checkout, with a small retry budget,
+    so a pool full of corpses self-heals after an upstream Postgres restart.
+  - Mid-flight dead-conn detection: if a query raises OperationalError /
+    InterfaceError inside the yielded context, the connection is discarded
+    with `putconn(close=True)` rather than being recycled.
+  - Best-effort cleanup — rollback / cursor.close / putconn never raise
+    a dead-conn error over the original exception.
+"""
+
+import logging
+from contextlib import contextmanager
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
+
+
+logger = logging.getLogger(__name__)
+
+
+# Errors that mean "this socket is unusable — discard, do not recycle."
+_DEAD_CONN_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+# How many times to retry checkout when pre-ping fails. Enough to drain
+# a pool full of corpses after Postgres restarts; not so high that we
+# spin forever if Postgres is genuinely down.
+MAX_HEALTH_RETRIES = 3
+
+
+class Database:
+    def __init__(
+        self,
+        db_host: str,
+        db_name: str,
+        db_user: str,
+        db_passwd: str,
+        min_conn: int = 2,
+        max_conn: int = 10,
+    ) -> None:
         self.pool = ThreadedConnectionPool(
-            min_conn, max_conn,
-            host=db_host, database=db_name, user=db_user, password=db_passwd,
-            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
+            min_conn,
+            max_conn,
+            host=db_host,
+            database=db_name,
+            user=db_user,
+            password=db_passwd,
+            # TCP keepalives — let the OS detect a silently dropped conn
+            # within ~80s instead of "until next reboot."
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
 
-    def _is_connection_alive(self, conn) -> bool:
+    @staticmethod
+    def _check_alive(conn) -> None:
+        """Cheap `SELECT 1` pre-ping. Raises on dead conn."""
+        cur = conn.cursor()
         try:
-            conn.cursor().execute("SELECT 1")
-            conn.rollback()
-            return True
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            return False
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        finally:
+            cur.close()
+        # Reset transaction state so the caller gets a clean slate.
+        conn.rollback()
 
     @contextmanager
     def get_connection(self):
-        conn = None
-        try:
-            conn = self.pool.getconn()
-            if not self._is_connection_alive(conn):
-                self.pool.putconn(conn, close=True)
+        """
+        Yield a healthy pooled connection.
+
+        Pre-pings before yielding. If the pool hands out a dead conn,
+        discards it (so the pool refills with a fresh socket) and retries
+        up to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
+        RuntimeError chained from the last underlying error.
+        """
+        last_err = None
+        for attempt in range(MAX_HEALTH_RETRIES):
+            conn = None
+            try:
                 conn = self.pool.getconn()
-            yield conn
-            conn.commit()
-        except Exception:
-            if conn:
+                self._check_alive(conn)
+            except _DEAD_CONN_ERRORS as e:
+                # Dead socket. Discard so the pool refills, then retry.
+                last_err = e
+                if conn is not None:
+                    try:
+                        self.pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                logger.warning(
+                    "DB checkout pre-ping failed (attempt %d/%d): %s",
+                    attempt + 1, MAX_HEALTH_RETRIES, e,
+                )
+                continue
+            except BaseException:
+                # Any other failure during checkout/probe — discard and
+                # propagate so callers see the real error (DatabaseError
+                # from failed-tx state, OSError, KeyboardInterrupt, ...).
+                if conn is not None:
+                    try:
+                        self.pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                raise
+
+            # Healthy conn — yield it.
+            try:
+                yield conn
+            except _DEAD_CONN_ERRORS:
+                # Mid-flight death. Discard with close=True so the corpse
+                # doesn't go back into the pool, then re-raise.
+                try:
+                    self.pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                raise
+            except BaseException:
                 try:
                     conn.rollback()
-                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                except _DEAD_CONN_ERRORS:
                     pass
-            raise
-        finally:
-            if conn:
                 try:
                     self.pool.putconn(conn)
                 except Exception:
@@ -419,39 +424,169 @@ class {ProjectName}DB:
                         conn.close()
                     except Exception:
                         pass
+                raise
+            else:
+                try:
+                    self.pool.putconn(conn)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            return
+
+        # Retries exhausted.
+        raise RuntimeError(
+            f"Could not acquire a healthy DB connection after "
+            f"{MAX_HEALTH_RETRIES} attempts"
+        ) from last_err
 
     @contextmanager
-    def get_cursor(self, commit: bool = True, cursor_factory=None):
+    def get_cursor(self, commit: bool = True, cursor_factory=RealDictCursor):
+        """
+        Yield a cursor inside a healthy connection.
+
+        Defaults to RealDictCursor (project convention). Pass
+        `cursor_factory=None` for the plain tuple-returning cursor.
+        Cleanup (rollback, cursor.close) suppresses dead-conn errors
+        so the caller sees the original exception, not a follow-on.
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=cursor_factory)
             try:
                 yield cursor
                 if commit:
                     conn.commit()
-            except Exception:
+            except BaseException:
                 try:
                     conn.rollback()
-                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                except _DEAD_CONN_ERRORS:
                     pass
                 raise
             finally:
-                cursor.close()
+                try:
+                    cursor.close()
+                except _DEAD_CONN_ERRORS:
+                    pass
 
-    def load_item_by_id(self, item_id: str) -> Item:
-        with self.get_cursor(commit=False, cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("SELECT * FROM items WHERE id = %s", (item_id,))
-            result = cursor.fetchone()
-            if not result:
-                raise Exception(f"Item {item_id} not found")
-            return Item.from_dict(dict(result))
+    def close(self) -> None:
+        if self.pool and not self.pool.closed:
+            self.pool.closeall()
 
-    def save_item(self, item: Item) -> str:
-        with self.get_cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO items (name, created_at) VALUES (%s, %s) RETURNING id",
-                (item.name, int(time.time()))
-            )
-            return str(cursor.fetchone()[0])
+    def __del__(self):
+        if hasattr(self, "pool"):
+            try:
+                self.close()
+            except Exception:
+                pass
+```
+
+### pgvector — optional opt-in
+
+If the project uses pgvector, register the type once per connection so query results come back as numpy arrays / lists. The cheapest hook is right after `_check_alive` inside `get_connection`, on the freshly-validated conn:
+
+```python
+from pgvector.psycopg2 import register_vector
+# ...
+self._check_alive(conn)
+register_vector(conn, globally=True)  # opt-in; remove this line if pgvector is not used
+```
+
+Skip this block entirely if pgvector is not in use.
+
+### Example usage
+
+```python
+import os
+import time
+
+db = Database(
+    db_host=os.environ["{PROJECT_NAME}_DB_HOST"],
+    db_name=os.environ["{PROJECT_NAME}_DB_NAME"],
+    db_user=os.environ["{PROJECT_NAME}_DB_USER"],
+    db_passwd=os.environ["{PROJECT_NAME}_DB_PASSWORD"],
+)
+
+# Read with RealDictCursor (default)
+with db.get_cursor(commit=False) as cursor:
+    cursor.execute("SELECT * FROM items WHERE id = %s", (item_id,))
+    row = cursor.fetchone()  # dict, not tuple
+    return Item.from_dict(dict(row))
+
+# Write
+with db.get_cursor() as cursor:
+    cursor.execute(
+        "INSERT INTO items (name, created_at) VALUES (%s, %s) RETURNING id",
+        (name, int(time.time())),
+    )
+    new_id = cursor.fetchone()["id"]
+```
+
+### Recovery-path tests (mocked pool, no live Postgres)
+
+Drop into `tests/test_database.py`. These cover the three critical paths without needing a running database:
+
+```python
+import psycopg2
+import pytest
+from unittest.mock import MagicMock
+
+from {project_name}.database import Database, MAX_HEALTH_RETRIES
+
+
+def _make_db_with_mocked_pool(connections):
+    """Build a Database whose pool returns the given pre-built mock conns."""
+    db = Database.__new__(Database)  # skip __init__'s real ThreadedConnectionPool
+    db.pool = MagicMock()
+    db.pool.getconn.side_effect = list(connections)
+    return db
+
+
+def _alive_conn():
+    conn = MagicMock()
+    conn.cursor.return_value.fetchone.return_value = (1,)
+    return conn
+
+
+def _dead_conn():
+    conn = MagicMock()
+    conn.cursor.return_value.execute.side_effect = psycopg2.OperationalError("dead")
+    return conn
+
+
+def test_dead_conn_on_first_checkout_retries_and_recovers():
+    dead, alive = _dead_conn(), _alive_conn()
+    db = _make_db_with_mocked_pool([dead, alive])
+
+    with db.get_connection() as conn:
+        assert conn is alive
+
+    # Dead conn was discarded with close=True so the pool refills.
+    db.pool.putconn.assert_any_call(dead, close=True)
+
+
+def test_pool_full_of_corpses_raises_after_max_retries():
+    corpses = [_dead_conn() for _ in range(MAX_HEALTH_RETRIES)]
+    db = _make_db_with_mocked_pool(corpses)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        with db.get_connection():
+            pass
+
+    assert isinstance(excinfo.value.__cause__, psycopg2.OperationalError)
+    assert db.pool.putconn.call_count == MAX_HEALTH_RETRIES
+
+
+def test_mid_flight_death_discards_conn_with_close():
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(psycopg2.OperationalError):
+        with db.get_connection() as conn:
+            raise psycopg2.OperationalError("conn died mid-query")
+
+    # Mid-flight death MUST close the conn, not recycle it.
+    db.pool.putconn.assert_called_once_with(alive, close=True)
 ```
 
 ## Design Principles
@@ -467,13 +602,15 @@ This pattern follows these principles:
 
 ### Database Driver (if applicable):
 1. **Connection pooling** - Use ThreadedConnectionPool for efficient connection reuse
-2. **TCP keepalives** - Enable keepalives on all pooled connections to detect dead connections
-3. **Health check on checkout** - Run `SELECT 1` before yielding a pooled connection; discard and replace if stale
-4. **Safe error handling** - Wrap rollback/putconn in try/except since dead connections throw on cleanup too
-5. **Context managers** - Automatic commit/rollback and resource cleanup
-6. **RealDictCursor for reads** - Always use RealDictCursor when loading data for easy dict conversion
-7. **Unix timestamps** - Store as BIGINT, convert only for display
-8. **Proper cleanup** - Close pool on destruction
+2. **TCP keepalives** - Enable keepalives on all pooled connections so the OS detects silently dropped sockets within ~80s
+3. **Pre-ping on every checkout** - Run `SELECT 1` before yielding a pooled connection; on failure, discard with `putconn(close=True)` so the pool refills with a fresh socket
+4. **Retry budget** - Allow up to `MAX_HEALTH_RETRIES` (3) pre-ping retries so a pool full of corpses self-heals in one request after Postgres comes back up; final failure raises `from last_err`
+5. **Mid-flight death detection** - If a query raises a dead-conn error inside the yielded context, discard with `putconn(close=True)` rather than recycling the corpse
+6. **Best-effort cleanup** - rollback / cursor.close / putconn must not raise dead-conn errors over the caller's original exception
+7. **Context managers** - Automatic commit/rollback and resource cleanup
+8. **RealDictCursor for reads** - Default `get_cursor` to `RealDictCursor` so reads return dicts
+9. **Unix timestamps** - Store as BIGINT, convert only for display
+10. **Proper cleanup** - Close pool on destruction
 
 ## Example Usage in Claude Code
 
