@@ -273,9 +273,10 @@ The pattern below is production-tested: in one incident, an upstream Postgres re
 - The first query raises `psycopg2.OperationalError` / `psycopg2.InterfaceError`.
 - The caller usually does plain `pool.putconn(conn)` on cleanup — which puts the **dead** conn right back into the pool for the next caller. Pool never self-heals.
 
-The fix has two parts:
+The fix has three parts:
 1. **Pre-ping** every checkout with `SELECT 1`. If it fails, discard with `putconn(close=True)` (the pool refills with a fresh socket) and retry up to `MAX_HEALTH_RETRIES` times.
-2. **Discard mid-flight deaths**. If the caller's query raises a dead-conn error inside the yielded body, do `putconn(close=True)` rather than plain `putconn`, so the corpse leaves the pool instead of being recycled.
+2. **Discard mid-flight deaths, recycle mid-flight app errors**. If the conn dies during the yielded body, do `putconn(close=True)` so the corpse leaves the pool. But if a *healthy* conn raised an app-level error (`SerializationFailure`, `DeadlockDetected`, `QueryCanceled`, `LockNotAvailable` — all `OperationalError` subclasses), recycle it with plain `putconn` so the next checkout doesn't pay a full TCP+TLS+auth handshake.
+3. **Classify with `conn.closed`, not exception type alone**. `OperationalError` is the parent class of both real socket deaths and the healthy-conn app errors above, so the exception class can't be the discriminator. Use rollback success + `conn.closed` (psycopg2 sets it non-zero only when the socket is actually broken) to decide discard vs recycle.
 
 A short retry budget (3) is enough to drain a pool full of corpses on the first request after Postgres comes back up, without spinning forever if Postgres is genuinely down.
 
@@ -297,9 +298,13 @@ Wraps psycopg2.pool.ThreadedConnectionPool with:
   - TCP keepalives so the OS detects silently dropped connections.
   - Pre-ping (`SELECT 1`) before every checkout, with a small retry budget,
     so a pool full of corpses self-heals after an upstream Postgres restart.
-  - Mid-flight dead-conn detection: if a query raises OperationalError /
-    InterfaceError inside the yielded context, the connection is discarded
-    with `putconn(close=True)` rather than being recycled.
+  - Mid-flight discard-vs-recycle: app-level errors on healthy conns
+    (psycopg2.errors.SerializationFailure / DeadlockDetected /
+    QueryCanceled / LockNotAvailable — all OperationalError subclasses
+    that fire on perfectly healthy conns) recycle the conn so the next
+    checkout doesn't pay a full TCP+TLS+auth handshake. Only genuine
+    socket death (rollback fails OR conn.closed != 0) discards with
+    `putconn(close=True)`.
   - Best-effort cleanup — rollback / cursor.close / putconn never raise
     a dead-conn error over the original exception.
 """
@@ -361,6 +366,38 @@ class Database:
         # Reset transaction state so the caller gets a clean slate.
         conn.rollback()
 
+    @staticmethod
+    def _is_dead_conn_error(conn, exc) -> bool:
+        """
+        Decide whether `exc` indicates the underlying socket is dead.
+
+        InterfaceError → always dead (operations on a closed conn/cursor).
+        OperationalError → ambiguous: it's the parent class of
+            SerializationFailure, DeadlockDetected, QueryCanceled, and
+            LockNotAvailable, all of which fire on perfectly healthy
+            conns. Use `conn.closed` as the discriminator: psycopg2 sets
+            it to non-zero only when the socket is actually broken.
+        Anything else → not a dead-conn signal.
+        """
+        if isinstance(exc, psycopg2.InterfaceError):
+            return True
+        if isinstance(exc, psycopg2.OperationalError):
+            return conn is None or getattr(conn, "closed", 0) != 0
+        return False
+
+    @staticmethod
+    def _safe_putback(pool, conn, close: bool) -> None:
+        """Best-effort return-to-pool. Falls back to conn.close() on pool error."""
+        if conn is None:
+            return
+        try:
+            pool.putconn(conn, close=close)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     @contextmanager
     def get_connection(self):
         """
@@ -370,6 +407,11 @@ class Database:
         discards it (so the pool refills with a fresh socket) and retries
         up to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
         RuntimeError chained from the last underlying error.
+
+        Mid-flight handling discriminates between truly-dead sockets
+        (rollback fails or `conn.closed != 0` → discard with close=True)
+        and app-level errors on healthy conns like SerializationFailure
+        or DeadlockDetected (recycle into the pool, no TCP+auth churn).
         """
         last_err = None
         for attempt in range(MAX_HEALTH_RETRIES):
@@ -377,62 +419,48 @@ class Database:
             try:
                 conn = self.pool.getconn()
                 self._check_alive(conn)
-            except _DEAD_CONN_ERRORS as e:
-                # Dead socket. Discard so the pool refills, then retry.
-                last_err = e
-                if conn is not None:
-                    try:
-                        self.pool.putconn(conn, close=True)
-                    except Exception:
-                        pass
-                logger.warning(
-                    "DB checkout pre-ping failed (attempt %d/%d): %s",
-                    attempt + 1, MAX_HEALTH_RETRIES, e,
-                )
-                continue
-            except BaseException:
-                # Any other failure during checkout/probe — discard and
-                # propagate so callers see the real error (DatabaseError
-                # from failed-tx state, OSError, KeyboardInterrupt, ...).
-                if conn is not None:
-                    try:
-                        self.pool.putconn(conn, close=True)
-                    except Exception:
-                        pass
+            except BaseException as e:
+                # Checkout/probe failed. Always discard with close=True —
+                # we don't trust a conn that failed pre-ping. Decide
+                # retry-vs-propagate from whether the error means
+                # "dead socket" (retry until budget) or "something else"
+                # like KeyboardInterrupt / OSError / a non-dead OperationalError
+                # (propagate immediately so the caller sees the real cause).
+                dead = self._is_dead_conn_error(conn, e)
+                self._safe_putback(self.pool, conn, close=True)
+                if dead:
+                    last_err = e
+                    logger.warning(
+                        "DB checkout pre-ping failed (attempt %d/%d): %s",
+                        attempt + 1, MAX_HEALTH_RETRIES, e,
+                    )
+                    continue
                 raise
 
-            # Healthy conn — yield it.
+            # Healthy conn — yield it. Mid-flight handling has to decide
+            # discard-vs-recycle without trusting the exception class
+            # alone (SerializationFailure / DeadlockDetected / QueryCanceled
+            # all inherit from OperationalError but the conn is alive).
             try:
                 yield conn
-            except _DEAD_CONN_ERRORS:
-                # Mid-flight death. Discard with close=True so the corpse
-                # doesn't go back into the pool, then re-raise.
-                try:
-                    self.pool.putconn(conn, close=True)
-                except Exception:
-                    pass
-                raise
             except BaseException:
+                conn_dead = False
                 try:
                     conn.rollback()
                 except _DEAD_CONN_ERRORS:
+                    # Rollback itself couldn't talk to the conn → it's dead.
+                    conn_dead = True
+                except BaseException:
+                    # Anything else from rollback — best-effort, don't
+                    # mask the caller's original exception. Fall through
+                    # to the conn.closed check below.
                     pass
-                try:
-                    self.pool.putconn(conn)
-                except Exception:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                if not conn_dead:
+                    conn_dead = getattr(conn, "closed", 0) != 0
+                self._safe_putback(self.pool, conn, close=conn_dead)
                 raise
             else:
-                try:
-                    self.pool.putconn(conn)
-                except Exception:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                self._safe_putback(self.pool, conn, close=False)
             return
 
         # Retries exhausted.
@@ -545,12 +573,18 @@ def _make_db_with_mocked_pool(connections):
 def _alive_conn():
     conn = MagicMock()
     conn.cursor.return_value.fetchone.return_value = (1,)
+    # Explicit closed=0 is REQUIRED — MagicMock would otherwise auto-create
+    # a truthy attribute, which makes the `getattr(conn, "closed", 0) != 0`
+    # check in get_connection misclassify every healthy conn as dead.
+    conn.closed = 0
     return conn
 
 
 def _dead_conn():
     conn = MagicMock()
     conn.cursor.return_value.execute.side_effect = psycopg2.OperationalError("dead")
+    # psycopg2 sets `closed` to non-zero when the socket is actually broken.
+    conn.closed = 2
     return conn
 
 
@@ -578,14 +612,46 @@ def test_pool_full_of_corpses_raises_after_max_retries():
 
 
 def test_mid_flight_death_discards_conn_with_close():
+    """A conn that dies mid-query (rollback then fails, conn.closed flips) is discarded."""
     alive = _alive_conn()
     db = _make_db_with_mocked_pool([alive])
 
     with pytest.raises(psycopg2.OperationalError):
         with db.get_connection() as conn:
-            raise psycopg2.OperationalError("conn died mid-query")
+            # Simulate the conn actually dying mid-query: the subsequent
+            # rollback in the mid-flight handler raises, and conn.closed flips.
+            conn.rollback.side_effect = psycopg2.OperationalError("conn died")
+            conn.closed = 2
+            raise psycopg2.OperationalError("query failed on dead conn")
 
     # Mid-flight death MUST close the conn, not recycle it.
+    db.pool.putconn.assert_called_once_with(alive, close=True)
+
+
+def test_serialization_failure_on_healthy_conn_recycles():
+    """SerializationFailure inherits from OperationalError but conn is alive — recycle, don't churn."""
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(psycopg2.errors.SerializationFailure):
+        with db.get_connection() as conn:
+            raise psycopg2.errors.SerializationFailure("conflict")
+
+    # Healthy conn — must recycle (close=False), NOT destroy.
+    db.pool.putconn.assert_called_once_with(alive, close=False)
+
+
+def test_value_error_on_silently_dead_conn_discards():
+    """Non-DB exception + silently-dead conn → close=True (don't recycle the corpse)."""
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(ValueError):
+        with db.get_connection() as conn:
+            conn.rollback.side_effect = psycopg2.OperationalError("dead")
+            conn.closed = 2
+            raise ValueError("app error while conn was dying")
+
     db.pool.putconn.assert_called_once_with(alive, close=True)
 ```
 
@@ -605,7 +671,7 @@ This pattern follows these principles:
 2. **TCP keepalives** - Enable keepalives on all pooled connections so the OS detects silently dropped sockets within ~80s
 3. **Pre-ping on every checkout** - Run `SELECT 1` before yielding a pooled connection; on failure, discard with `putconn(close=True)` so the pool refills with a fresh socket
 4. **Retry budget** - Allow up to `MAX_HEALTH_RETRIES` (3) pre-ping retries so a pool full of corpses self-heals in one request after Postgres comes back up; final failure raises `from last_err`
-5. **Mid-flight death detection** - If a query raises a dead-conn error inside the yielded context, discard with `putconn(close=True)` rather than recycling the corpse
+5. **Mid-flight discard vs recycle** - Distinguish real dead sockets (rollback fails OR `conn.closed != 0`) from app-level errors on healthy conns (`SerializationFailure` / `DeadlockDetected` / `QueryCanceled` / `LockNotAvailable` — all `OperationalError` subclasses that fire on live conns). Healthy conns recycle into the pool; only dead sockets discard with `putconn(close=True)`. The naïve "any `OperationalError` → close=True" pattern churns the pool under serializable-isolation or timeout-bounded workloads.
 6. **Best-effort cleanup** - rollback / cursor.close / putconn must not raise dead-conn errors over the caller's original exception
 7. **Context managers** - Automatic commit/rollback and resource cleanup
 8. **RealDictCursor for reads** - Default `get_cursor` to `RealDictCursor` so reads return dicts
