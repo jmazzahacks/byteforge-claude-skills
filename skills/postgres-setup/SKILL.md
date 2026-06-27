@@ -302,9 +302,11 @@ Wraps psycopg2.pool.ThreadedConnectionPool with:
     (psycopg2.errors.SerializationFailure / DeadlockDetected /
     QueryCanceled / LockNotAvailable — all OperationalError subclasses
     that fire on perfectly healthy conns) recycle the conn so the next
-    checkout doesn't pay a full TCP+TLS+auth handshake. Only genuine
-    socket death (rollback fails OR conn.closed != 0) discards with
-    `putconn(close=True)`.
+    checkout doesn't pay a full TCP+TLS+auth handshake. Only unsafe
+    conns discard with `putconn(close=True)`: rollback raises ANY
+    error (dead socket OR corrupt transaction state — psycopg2 only
+    flips conn.closed on socket death, not on transaction-state
+    corruption) OR conn.closed != 0.
   - Best-effort cleanup — rollback / cursor.close / putconn never raise
     a dead-conn error over the original exception.
 """
@@ -362,7 +364,16 @@ class Database:
             cur.execute("SELECT 1")
             cur.fetchone()
         finally:
-            cur.close()
+            # Best-effort cursor close. If cur.close() raises an
+            # unexpected error (rare — e.g. psycopg2 C-extension state
+            # corruption outside _DEAD_CONN_ERRORS), swallow it so the
+            # rollback below still runs. The SELECT 1 exception path is
+            # unaffected: if execute/fetchone raised, that exception
+            # propagates through this finally clause untouched.
+            try:
+                cur.close()
+            except Exception:
+                pass
         # Reset transaction state so the caller gets a clean slate.
         conn.rollback()
 
@@ -408,10 +419,12 @@ class Database:
         up to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
         RuntimeError chained from the last underlying error.
 
-        Mid-flight handling discriminates between truly-dead sockets
-        (rollback fails or `conn.closed != 0` → discard with close=True)
-        and app-level errors on healthy conns like SerializationFailure
-        or DeadlockDetected (recycle into the pool, no TCP+auth churn).
+        Mid-flight handling discriminates between unsafe conns —
+        rollback raises ANY error (dead socket OR corrupt transaction
+        state) OR `conn.closed != 0` → discard with close=True — and
+        app-level errors on healthy conns like SerializationFailure
+        or DeadlockDetected where rollback succeeds cleanly (recycle
+        into the pool, no TCP+auth churn).
         """
         last_err = None
         for attempt in range(MAX_HEALTH_RETRIES):
@@ -451,10 +464,17 @@ class Database:
                     # Rollback itself couldn't talk to the conn → it's dead.
                     conn_dead = True
                 except BaseException:
-                    # Anything else from rollback — best-effort, don't
-                    # mask the caller's original exception. Fall through
-                    # to the conn.closed check below.
-                    pass
+                    # Rollback failed for an unexpected reason (not in
+                    # _DEAD_CONN_ERRORS). conn.closed is unlikely to be
+                    # flipped — psycopg2 only flips it on socket death —
+                    # but transaction state is now unknown, possibly with
+                    # the caller's writes still pending. Don't recycle a
+                    # conn whose rollback we can't trust; discard with
+                    # close=True so the pool refills with a clean socket.
+                    # The unexpected rollback error is swallowed (not
+                    # re-raised) so the caller's original exception
+                    # still propagates.
+                    conn_dead = True
                 if not conn_dead:
                     conn_dead = getattr(conn, "closed", 0) != 0
                 self._safe_putback(self.pool, conn, close=conn_dead)
@@ -476,8 +496,11 @@ class Database:
 
         Defaults to RealDictCursor (project convention). Pass
         `cursor_factory=None` for the plain tuple-returning cursor.
-        Cleanup (rollback, cursor.close) suppresses dead-conn errors
-        so the caller sees the original exception, not a follow-on.
+        Cleanup (rollback, cursor.close) swallows ALL errors so the
+        caller's original exception always propagates — standard
+        Python finally-cleanup idiom. The mid-flight rollback in
+        get_connection still runs after this returns and will discard
+        a tainted conn with close=True.
         """
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=cursor_factory)
@@ -488,13 +511,19 @@ class Database:
             except BaseException:
                 try:
                     conn.rollback()
-                except _DEAD_CONN_ERRORS:
+                except Exception:
+                    # Swallow any rollback failure so the caller's
+                    # exception isn't masked. get_connection's mid-flight
+                    # handler will run its own rollback and discard the
+                    # conn with close=True if needed.
                     pass
                 raise
             finally:
                 try:
                     cursor.close()
-                except _DEAD_CONN_ERRORS:
+                except Exception:
+                    # Standard finally-cleanup idiom — never raise from
+                    # finally; the caller's exception must survive.
                     pass
 
     def close(self) -> None:
@@ -653,6 +682,32 @@ def test_value_error_on_silently_dead_conn_discards():
             raise ValueError("app error while conn was dying")
 
     db.pool.putconn.assert_called_once_with(alive, close=True)
+
+
+def test_unexpected_rollback_failure_discards_conn():
+    """Rollback raises a non-_DEAD_CONN_ERRORS exception → discard (transaction state is unknown).
+
+    Guards against silently recycling a conn whose rollback we couldn't
+    trust — psycopg2 won't flip conn.closed on transaction-state
+    corruption, so the conn looks healthy but may have the previous
+    caller's uncommitted writes still pending. The caller's original
+    exception (ValueError here) must still propagate; the rollback
+    exception is swallowed.
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(ValueError):
+        with db.get_connection() as conn:
+            # Alive conn (closed=0) but rollback raises something
+            # outside _DEAD_CONN_ERRORS — e.g. a psycopg2 internal
+            # state error or a buggy session.
+            conn.rollback.side_effect = RuntimeError("unexpected rollback failure")
+            raise ValueError("app error mid-transaction")
+
+    # Tainted conn MUST be discarded (close=True), NOT recycled —
+    # transaction state is unknown and may include uncommitted writes.
+    db.pool.putconn.assert_called_once_with(alive, close=True)
 ```
 
 ## Design Principles
@@ -671,7 +726,7 @@ This pattern follows these principles:
 2. **TCP keepalives** - Enable keepalives on all pooled connections so the OS detects silently dropped sockets within ~80s
 3. **Pre-ping on every checkout** - Run `SELECT 1` before yielding a pooled connection; on failure, discard with `putconn(close=True)` so the pool refills with a fresh socket
 4. **Retry budget** - Allow up to `MAX_HEALTH_RETRIES` (3) pre-ping retries so a pool full of corpses self-heals in one request after Postgres comes back up; final failure raises `from last_err`
-5. **Mid-flight discard vs recycle** - Distinguish real dead sockets (rollback fails OR `conn.closed != 0`) from app-level errors on healthy conns (`SerializationFailure` / `DeadlockDetected` / `QueryCanceled` / `LockNotAvailable` — all `OperationalError` subclasses that fire on live conns). Healthy conns recycle into the pool; only dead sockets discard with `putconn(close=True)`. The naïve "any `OperationalError` → close=True" pattern churns the pool under serializable-isolation or timeout-bounded workloads.
+5. **Mid-flight discard vs recycle** - Distinguish unsafe conns (rollback raises ANY error — dead socket OR transaction-state corruption — OR `conn.closed != 0`) from app-level errors on healthy conns where rollback succeeded cleanly (`SerializationFailure` / `DeadlockDetected` / `QueryCanceled` / `LockNotAvailable` — all `OperationalError` subclasses that fire on live conns). Healthy conns recycle into the pool; unsafe conns discard with `putconn(close=True)`. Note psycopg2 only flips `conn.closed` on actual socket death, not on transaction-state corruption — so the rollback-failure signal is what catches the case where the socket is alive but the previous caller's writes may still be pending. The naïve "any `OperationalError` → close=True" pattern churns the pool under serializable-isolation or timeout-bounded workloads.
 6. **Best-effort cleanup** - rollback / cursor.close / putconn must not raise dead-conn errors over the caller's original exception
 7. **Context managers** - Automatic commit/rollback and resource cleanup
 8. **RealDictCursor for reads** - Default `get_cursor` to `RealDictCursor` so reads return dicts
