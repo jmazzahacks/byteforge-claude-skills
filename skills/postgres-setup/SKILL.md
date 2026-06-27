@@ -308,7 +308,20 @@ Wraps psycopg2.pool.ThreadedConnectionPool with:
     flips conn.closed on socket death, not on transaction-state
     corruption) OR conn.closed != 0.
   - Best-effort cleanup — rollback / cursor.close / putconn never raise
-    a dead-conn error over the original exception.
+    a dead-conn error over the original exception. Unexpected failures
+    inside swallow arms are logged via `logger.exception` so they don't
+    vanish silently while still letting the caller's exception propagate.
+  - Signal-safe — cleanup arms catch `Exception`, not `BaseException`, so
+    `KeyboardInterrupt` / `SystemExit` raised during rollback or cursor
+    close still propagate. The cost: a conn raised-through-by-signal may
+    leak out of the pool (the bare re-raise won't run putback). Accepted
+    tradeoff — silently absorbing a SIGINT during cleanup is the worse
+    failure mode, and process exit reclaims the socket anyway.
+
+If you add Prometheus or other instrumentation that increments counters
+around the checkout, put the increment INSIDE the outer try: so a signal
+arriving in the one-bytecode window between `getconn()` and the try
+can't strand a counter or leak a conn.
 """
 
 import logging
@@ -373,7 +386,7 @@ class Database:
             try:
                 cur.close()
             except Exception:
-                pass
+                logger.exception("DB cursor close failed during pre-ping cleanup")
         # Reset transaction state so the caller gets a clean slate.
         conn.rollback()
 
@@ -404,10 +417,11 @@ class Database:
         try:
             pool.putconn(conn, close=close)
         except Exception:
+            logger.exception("Pool putconn failed; falling back to direct conn.close()")
             try:
                 conn.close()
             except Exception:
-                pass
+                logger.exception("Fallback conn.close() also failed during pool return")
 
     @contextmanager
     def get_connection(self):
@@ -463,7 +477,7 @@ class Database:
                 except _DEAD_CONN_ERRORS:
                     # Rollback itself couldn't talk to the conn → it's dead.
                     conn_dead = True
-                except BaseException:
+                except Exception:
                     # Rollback failed for an unexpected reason (not in
                     # _DEAD_CONN_ERRORS). conn.closed is unlikely to be
                     # flipped — psycopg2 only flips it on socket death —
@@ -474,13 +488,34 @@ class Database:
                     # The unexpected rollback error is swallowed (not
                     # re-raised) so the caller's original exception
                     # still propagates.
+                    #
+                    # NB: this arm catches Exception, NOT BaseException.
+                    # KeyboardInterrupt / SystemExit raised during
+                    # conn.rollback() must propagate — silently absorbing
+                    # them here would let a SIGINT during cleanup turn
+                    # into "process keeps running through the user's
+                    # Ctrl-C." The cost of letting them through is that
+                    # this conn leaks (the bare `raise` below never
+                    # reaches _safe_putback), but signal-during-rollback
+                    # almost always means process exit, where the OS
+                    # reclaims the socket anyway.
+                    logger.exception(
+                        "Unexpected DB rollback failure during mid-flight cleanup; "
+                        "discarding conn"
+                    )
                     conn_dead = True
                 if not conn_dead:
                     conn_dead = getattr(conn, "closed", 0) != 0
                 self._safe_putback(self.pool, conn, close=conn_dead)
                 raise
             else:
-                self._safe_putback(self.pool, conn, close=False)
+                # Success path: mirror the exception branch's `conn.closed`
+                # check so a conn that was closed directly inside the `with`
+                # block (caller misuse or future helper bug) is discarded
+                # instead of re-entering the pool as a corpse for the next
+                # caller to pay pre-ping latency on.
+                conn_dead = getattr(conn, "closed", 0) != 0
+                self._safe_putback(self.pool, conn, close=conn_dead)
             return
 
         # Retries exhausted.
@@ -496,10 +531,11 @@ class Database:
 
         Defaults to RealDictCursor (project convention). Pass
         `cursor_factory=None` for the plain tuple-returning cursor.
-        Cleanup (rollback, cursor.close) swallows ALL errors so the
+        Cleanup (rollback, cursor.close) swallows `Exception` so the
         caller's original exception always propagates — standard
-        Python finally-cleanup idiom. The mid-flight rollback in
-        get_connection still runs after this returns and will discard
+        Python finally-cleanup idiom. `KeyboardInterrupt` / `SystemExit`
+        still propagate through the cleanup arms. The mid-flight rollback
+        in get_connection still runs after this returns and will discard
         a tainted conn with close=True.
         """
         with self.get_connection() as conn:
@@ -516,7 +552,7 @@ class Database:
                     # exception isn't masked. get_connection's mid-flight
                     # handler will run its own rollback and discard the
                     # conn with close=True if needed.
-                    pass
+                    logger.exception("DB rollback failed during get_cursor cleanup")
                 raise
             finally:
                 try:
@@ -524,7 +560,7 @@ class Database:
                 except Exception:
                     # Standard finally-cleanup idiom — never raise from
                     # finally; the caller's exception must survive.
-                    pass
+                    logger.exception("DB cursor close failed during get_cursor cleanup")
 
     def close(self) -> None:
         if self.pool and not self.pool.closed:
@@ -708,6 +744,24 @@ def test_unexpected_rollback_failure_discards_conn():
     # Tainted conn MUST be discarded (close=True), NOT recycled —
     # transaction state is unknown and may include uncommitted writes.
     db.pool.putconn.assert_called_once_with(alive, close=True)
+
+
+def test_keyboard_interrupt_during_rollback_propagates():
+    """A signal raised during mid-flight rollback must propagate, not be swallowed.
+
+    Regression guard for the v1.18.5 → v1.18.6 narrowing: the inner
+    cleanup arm catches `Exception`, not `BaseException`, so a SIGINT
+    arriving during `conn.rollback()` reaches the caller as
+    KeyboardInterrupt instead of being silently absorbed (which would
+    let the process keep running through the user's Ctrl-C).
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with pytest.raises(KeyboardInterrupt):
+        with db.get_connection() as conn:
+            conn.rollback.side_effect = KeyboardInterrupt
+            raise ValueError("app error mid-transaction")
 ```
 
 ## Design Principles
@@ -727,7 +781,7 @@ This pattern follows these principles:
 3. **Pre-ping on every checkout** - Run `SELECT 1` before yielding a pooled connection; on failure, discard with `putconn(close=True)` so the pool refills with a fresh socket
 4. **Retry budget** - Allow up to `MAX_HEALTH_RETRIES` (3) pre-ping retries so a pool full of corpses self-heals in one request after Postgres comes back up; final failure raises `from last_err`
 5. **Mid-flight discard vs recycle** - Distinguish unsafe conns (rollback raises ANY error — dead socket OR transaction-state corruption — OR `conn.closed != 0`) from app-level errors on healthy conns where rollback succeeded cleanly (`SerializationFailure` / `DeadlockDetected` / `QueryCanceled` / `LockNotAvailable` — all `OperationalError` subclasses that fire on live conns). Healthy conns recycle into the pool; unsafe conns discard with `putconn(close=True)`. Note psycopg2 only flips `conn.closed` on actual socket death, not on transaction-state corruption — so the rollback-failure signal is what catches the case where the socket is alive but the previous caller's writes may still be pending. The naïve "any `OperationalError` → close=True" pattern churns the pool under serializable-isolation or timeout-bounded workloads.
-6. **Best-effort cleanup** - rollback / cursor.close / putconn must not raise dead-conn errors over the caller's original exception
+6. **Best-effort cleanup** - rollback / cursor.close / putconn must not raise dead-conn errors over the caller's original exception. Catch `Exception`, not `BaseException`, so `KeyboardInterrupt` / `SystemExit` still propagate; log any swallowed failure with `logger.exception` so silent observability gaps don't compound under load.
 7. **Context managers** - Automatic commit/rollback and resource cleanup
 8. **RealDictCursor for reads** - Default `get_cursor` to `RealDictCursor` so reads return dicts
 9. **Unix timestamps** - Store as BIGINT, convert only for display
