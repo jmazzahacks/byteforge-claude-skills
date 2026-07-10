@@ -232,9 +232,6 @@ PORT={port}
 {PROJECT_NAME}_DB_USER={project_name}
 {PROJECT_NAME}_DB_PASSWORD=your_password_here
 
-# Build Configuration (for private dependencies)
-CR_PAT=your_github_personal_access_token
-
 # Optional: Additional app-specific variables
 DEBUG=False
 LOG_LEVEL=INFO
@@ -242,10 +239,16 @@ LOG_LEVEL=INFO
 
 **CRITICAL**: Replace:
 - `{port}` → Application port (e.g., 5678)
-- `{PROJECT_NAME}` → Uppercase project name (e.g., "HYPEROPT_SERVER")
+- `{PROJECT_NAME}` → Uppercase project name (e.g., "MY_APP")
 - `{project_name}` → Snake case project name (e.g., "my_flask_app")
 
-**Note:** Remove CR_PAT if you don't have private dependencies.
+**Do NOT put `CR_PAT` in `example.env` / `.env`.** It's a build-time secret,
+not a runtime variable — the container doesn't need it after the image is
+built. `docker run --env-file .env` (below) injects every variable in the
+file into the running container's environment, where any process in the
+container can read it via `os.environ` and it shows up in
+`docker inspect <container_id>`. Keep `CR_PAT` in the shell env only
+(see "Building and Publishing" below) so it never reaches `docker run`.
 
 ### Update .gitignore
 
@@ -342,13 +345,16 @@ cp example.env .env
 
 ### Building and Publishing
 
-**Load environment variables** (if using .env):
+**Export the build-time token** (private dependencies only):
 ```bash
-# Export variables from .env for build process
-set -a
-source .env
-set +a
+# CR_PAT must be in the shell environment — build-publish.sh reads $CR_PAT
+# directly. Do NOT put it in .env; see Step 4 for why.
+export CR_PAT=ghp_your_github_personal_access_token
+
+# Persist for future shells by adding the same line to ~/.zshrc (or ~/.bashrc).
 ```
+
+Skip this if the project has no private GitHub dependencies (no `--build-arg CR_PAT=$CR_PAT` in `build-publish.sh`).
 
 **Standard build** (increments version, uses cache):
 ```bash
