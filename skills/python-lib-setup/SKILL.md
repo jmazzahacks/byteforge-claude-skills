@@ -99,6 +99,15 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+# Required if ANY dependency is a direct URL reference (e.g., a private
+# GitHub repo via `pkg @ git+https://...`). Without this, hatchling refuses
+# to build the package: `ValueError: Dependency #N cannot be a direct
+# reference unless field tool.hatch.metadata.allow-direct-references is
+# set to true`. Harmless when no direct-ref deps are present, so it's
+# enabled unconditionally in this template.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/{package_name}"]
 
@@ -134,6 +143,23 @@ Issues = "https://github.com/{github_username}/{project-name}/issues"
 - **O'Saasy**: Use `license = {text = "O'Saasy License"}` and create LICENSE file from https://osaasy.dev/
 
 ## Step 4: Create Comprehensive .gitignore
+
+**CRITICAL ordering — the virtual environment MUST be created before this
+`.gitignore` is written.** Since Python 3.13, `python -m venv <path>` writes a
+`.gitignore` containing just `*` into the venv root. This skill's convention
+puts the venv at the project root (`python -m venv .` — see Step 6's
+`build-publish.sh` and the README's Development / Setup section), so if
+`.gitignore` is written first and `python -m venv .` runs after, the
+project's `.gitignore` gets clobbered with `*`. `git init && git add .` then
+silently ignores every file in the package.
+
+Correct order:
+
+1. `python -m venv .` (create the venv at the project root; produces a
+   throwaway `.gitignore` with `*` inside)
+2. Write the `.gitignore` below — this overwrites the venv-generated one
+   with the comprehensive pattern set, which itself already ignores the venv
+   directory contents.
 
 Create `.gitignore` with comprehensive Python patterns:
 
@@ -439,6 +465,13 @@ import {package_name}
 
 ### Setup
 
+> **Note (Python 3.13+):** `python -m venv .` writes a `.gitignore` with `*`
+> into the venv root, which is the project root under this convention — so
+> re-creating the venv here **overwrites this project's `.gitignore`**. On
+> first setup that's fine (the repo's real `.gitignore` hasn't been created
+> yet). If you re-create the venv later, restore the tracked file
+> immediately: `git checkout .gitignore`.
+
 ```bash
 # Create virtual environment
 python -m venv .
@@ -514,6 +547,13 @@ import {package_name}
 ## Development
 
 ### Setup
+
+> **Note (Python 3.13+):** `python -m venv .` writes a `.gitignore` with `*`
+> into the venv root, which is the project root under this convention — so
+> re-creating the venv here **overwrites this project's `.gitignore`**. On
+> first setup that's fine (the repo's real `.gitignore` hasn't been created
+> yet). If you re-create the venv later, restore the tracked file
+> immediately: `git checkout .gitignore`.
 
 ```bash
 # Create virtual environment
