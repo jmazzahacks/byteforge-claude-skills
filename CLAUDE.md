@@ -117,7 +117,7 @@ Skills should be:
 Always use `{PROJECT_NAME}` and `{project_name}` substitution patterns in SKILL.md templates, then replace during execution.
 
 ### Environment Variables
-Follow pattern of global vars (e.g., `PG_PASSWORD`) and project-specific vars (e.g., `{PROJECT_NAME}_PG_PASSWORD`).
+Project-scoped naming across setup and runtime: `{PROJECT_NAME}_DB_HOST`, `{PROJECT_NAME}_DB_PORT`, `{PROJECT_NAME}_DB_NAME`, `{PROJECT_NAME}_DB_USER`, `{PROJECT_NAME}_DB_PASSWORD`. The setup script and the runtime driver / flask-smorest-api singleton MUST read the same vars — a mismatch silently provisions a DB the app can't authenticate to (v1.18.11 fix).
 
 ### Database Conventions
 - Unix timestamps (BIGINT) for all date/time storage

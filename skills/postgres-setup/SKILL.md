@@ -30,11 +30,11 @@ python-dotenv
 
 **IMPORTANT**: Before creating files, ask the user these questions:
 
-1. **"What is your project name?"** (e.g., "arcana", "trading-bot", "myapp")
+1. **"What is your project name?"** (e.g., "myapp")
    - Use this to derive:
-     - Database name: `{project_name}` (e.g., `arcana`)
-     - User name: `{project_name}` (e.g., `arcana`)
-     - Password env var: `{PROJECT_NAME}_PG_PASSWORD` (e.g., `ARCANA_PG_PASSWORD`)
+     - Database name: `{project_name}` (e.g., `myapp`)
+     - User name: `{project_name}` (e.g., `myapp`)
+     - Password env var: `{PROJECT_NAME}_DB_PASSWORD` (e.g., `MYAPP_DB_PASSWORD`)
 
 2. **"What tables do you need in your schema?"** (optional - can create skeleton if unknown)
 
@@ -117,17 +117,22 @@ def main():
                        help='PostgreSQL superuser name (default: postgres)')
     args = parser.parse_args()
 
-    pg_host = os.environ.get('POSTGRES_HOST', 'localhost')
-    pg_port = os.environ.get('POSTGRES_PORT', '5432')
+    # Read the SAME env vars the runtime app (Step 7 driver /
+    # flask-smorest-api singleton) reads, so setup and runtime resolve
+    # the same database and credentials. Do NOT introduce a separate
+    # naming here — a mismatch silently provisions a DB the app can't
+    # authenticate to.
+    pg_host = os.environ.get('{PROJECT_NAME}_DB_HOST', 'localhost')
+    pg_port = os.environ.get('{PROJECT_NAME}_DB_PORT', '5432')
     pg_user = args.pg_user
     pg_password = args.pg_password
 
-    {project_name}_db = os.environ.get('{PROJECT_NAME}_PG_DB', '{project_name}')
-    {project_name}_user = os.environ.get('{PROJECT_NAME}_PG_USER', '{project_name}')
-    {project_name}_password = os.environ.get('{PROJECT_NAME}_PG_PASSWORD', None)
+    {project_name}_db = os.environ.get('{PROJECT_NAME}_DB_NAME', '{project_name}')
+    {project_name}_user = os.environ.get('{PROJECT_NAME}_DB_USER', '{project_name}')
+    {project_name}_password = os.environ.get('{PROJECT_NAME}_DB_PASSWORD', None)
 
     if {project_name}_password is None:
-        print("Error: {PROJECT_NAME}_PG_PASSWORD environment variable is required")
+        print("Error: {PROJECT_NAME}_DB_PASSWORD environment variable is required")
         sys.exit(1)
 
     print(f"Setting up database '{{project_name}_db}' and user '{{project_name}_user}'...")
@@ -211,8 +216,8 @@ if __name__ == "__main__":
 ```
 
 **CRITICAL**: Replace ALL instances of:
-- `{PROJECT_NAME}` → uppercase project name (e.g., `ARCANA`, `MYAPP`)
-- `{project_name}` → lowercase project name (e.g., `arcana`, `myapp`)
+- `{PROJECT_NAME}` → uppercase project name (e.g., `MYAPP`)
+- `{project_name}` → lowercase project name (e.g., `myapp`)
 
 ## Step 5: Create Documentation
 
@@ -228,20 +233,21 @@ Add a section to the project's README.md (or create SETUP.md) documenting:
 
 ### Environment Variables
 
-**PostgreSQL connection (optional)**:
-- `POSTGRES_HOST` - PostgreSQL host (default: localhost)
-- `POSTGRES_PORT` - PostgreSQL port (default: 5432)
+All connection env vars are project-scoped and match the runtime app
+(Step 7 driver / flask-smorest-api singleton), so setup and runtime
+resolve the same database.
 
-**Project-specific**:
-- `{PROJECT_NAME}_PG_DB` - Database name (default: {project_name})
-- `{PROJECT_NAME}_PG_USER` - Application user (default: {project_name})
-- `{PROJECT_NAME}_PG_PASSWORD` - Application user password (REQUIRED)
+- `{PROJECT_NAME}_DB_HOST` - PostgreSQL host (default: localhost)
+- `{PROJECT_NAME}_DB_PORT` - PostgreSQL port (default: 5432)
+- `{PROJECT_NAME}_DB_NAME` - Database name (default: {project_name})
+- `{PROJECT_NAME}_DB_USER` - Application user (default: {project_name})
+- `{PROJECT_NAME}_DB_PASSWORD` - Application user password (REQUIRED)
 
 ### Setup Instructions
 
 ```bash
 # Set required environment variables
-export {PROJECT_NAME}_PG_PASSWORD="your_app_password"
+export {PROJECT_NAME}_DB_PASSWORD="your_app_password"
 
 # Run setup script (pass postgres superuser password as argument)
 python dev_scripts/setup_database.py --pg-password "your_postgres_password"
@@ -791,12 +797,12 @@ This pattern follows these principles:
 
 User: "Set up postgres database for my project"
 Claude: "What is your project name?"
-User: "trading-bot"
+User: "myapp"
 Claude:
 1. Creates database/ and dev_scripts/ directories
 2. Creates database/schema.sql with skeleton
 3. Creates dev_scripts/setup_database.py with:
-   - TRADING_BOT_PG_PASSWORD
-   - trading_bot database and user
+   - MYAPP_DB_PASSWORD
+   - myapp database and user
 4. Documents environment variables needed
 5. Makes script executable
