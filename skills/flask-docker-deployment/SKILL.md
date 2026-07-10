@@ -104,6 +104,12 @@ EXPOSE {port}
 ENV PYTHONPATH=/app
 ENV PORT={port}
 
+# Container-level liveness signal for orchestrators. Assumes the app
+# exposes GET /health returning 2xx (convention for this skill's
+# Flask services — see "Best Practices" below).
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
+
 # Run with gunicorn for production
 # Port is read from PORT env var so it can be overridden at runtime
 # The gunicorn target is quoted so factory-pattern forms like
@@ -145,6 +151,10 @@ USER appuser
 EXPOSE {port}
 ENV PYTHONPATH=/app
 ENV PORT={port}
+
+# Container-level liveness signal. Assumes GET /health returns 2xx.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
 
 # Quote the gunicorn target so factory forms like `create_app()`
 # don't collide with dash's function-def syntax.
@@ -632,6 +642,8 @@ ENV PATH=/root/.local/bin:$PATH
 RUN useradd --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 ENV PORT=6100
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
 CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 app:app
 ```
 
