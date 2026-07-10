@@ -106,14 +106,16 @@ ENV PORT={port}
 
 # Run with gunicorn for production
 # Port is read from PORT env var so it can be overridden at runtime
-CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} {module}:{app}
+# The gunicorn target is quoted so factory-pattern forms like
+# `create_app()` don't collide with dash's function-def syntax.
+CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
 ```
 
 **CRITICAL Replacements:**
 - `{port}` → Default application port (e.g., 5678). This is the default value for the `PORT` env var — it can be overridden at runtime with `-e PORT=XXXX`
 - `{workers}` → Number of workers (e.g., 4, or 1 for background jobs)
 - `{module}` → Python module name (e.g., flask_app)
-- `{app}` → App variable name (e.g., app or create_app())
+- `{app}` → App variable name (e.g., `app` or `create_app()`). **Keep the surrounding double quotes around `"{module}:{app}"`** — without them, dash parses the trailing `()` of `create_app()` as function-definition syntax and the container crash-loops with `Syntax error: "(" unexpected` before gunicorn ever starts.
 
 **If NO private dependencies**, remove these lines:
 ```dockerfile
@@ -144,7 +146,9 @@ EXPOSE {port}
 ENV PYTHONPATH=/app
 ENV PORT={port}
 
-CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} {module}:{app}
+# Quote the gunicorn target so factory forms like `create_app()`
+# don't collide with dash's function-def syntax.
+CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
 ```
 
 ## Step 3: Create build-publish.sh Script
@@ -437,10 +441,10 @@ This pattern follows these principles:
 ### Pattern 1: Standard Web API
 ```dockerfile
 ENV PORT=6100
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 app:create_app()
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 "app:create_app()"
 ```
 - Multiple workers for concurrent requests
-- Factory pattern with `create_app()`
+- Factory pattern with `create_app()` — the target **must** be quoted; unquoted, dash reads the trailing `()` as function-definition syntax and the container crash-loops before gunicorn starts.
 
 ### Pattern 2: Background Job Worker
 ```dockerfile
