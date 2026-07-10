@@ -29,9 +29,9 @@ Use this skill when:
 
 **IMPORTANT**: Before creating files, ask the user these questions:
 
-1. **"What is your project name?"** (e.g., "materia-server", "trading-api", "myapp")
+1. **"What is your project name?"** (e.g., "myapp")
    - Use this to derive:
-     - Main module: `{project_name}.py` (e.g., `materia_server.py`)
+     - Main module: `{project_name}.py` (e.g., `myapp.py`)
      - Port number (suggest based on project, default: 5000)
 
 2. **"What features/endpoints do you need?"** (e.g., "users", "tokens", "orders")
@@ -41,6 +41,10 @@ Use this skill when:
    - If yes, reference the `postgres-setup` skill for the database layer. **Use its Step 7 ("Create Resilient Database Driver") to scaffold `src/{project_name}/database.py`** — the singleton manager below imports `Database` from that exact path. The resilient pattern (pre-ping + retry + mid-flight death detection) is what keeps the Flask process from wedging when Postgres restarts; the naïve `ThreadedConnectionPool` pattern returns 500s on every request until the process restarts.
 
 4. **"What port should the server run on?"** (default: 5000)
+
+5. **"Do you want a Swagger UI docs endpoint at `/swagger`?"** (yes/no — **default no**)
+   - **Default is no.** Most internal services (tailnet-only, backend-only, no need for a browsable doc surface) should keep it off — an exposed Swagger UI is attack surface they never asked for, and `flask-smorest`'s `Api()` / `Blueprint` / `abort` machinery all still work without any `OPENAPI_URL_PREFIX` / `OPENAPI_SWAGGER_UI_*` config (as long as `API_TITLE` / `API_VERSION` / `OPENAPI_VERSION` are set, which they are in the base template).
+   - Say **yes** only if the service genuinely wants a browsable UI (public API, dev-portal, etc.). If yes, you'll be responsible for **vendoring `swagger-ui-dist` assets** under `/static/swagger-ui/` (or an internal mirror) — this skill no longer defaults to a third-party CDN (previous versions pointed `OPENAPI_SWAGGER_UI_URL` at `cdn.jsdelivr.net`, which is a supply-chain surface and doesn't work in air-gapped/tailnet-only environments).
 
 ## Step 2: Create Directory Structure
 
@@ -76,12 +80,13 @@ logger = logging.getLogger(__name__)
 
 def create_app():
     app = Flask(__name__)
+    # These three are ALWAYS required by flask-smorest's `Api()`, even
+    # when no Swagger UI is served — `Api()` refuses to initialize without
+    # them. They govern the OpenAPI spec object flask-smorest builds in
+    # memory (used for validation and, if enabled, doc-surface serving).
     app.config['API_TITLE'] = '{Project Name} API'
     app.config['API_VERSION'] = 'v1'
     app.config['OPENAPI_VERSION'] = '3.0.2'
-    app.config['OPENAPI_URL_PREFIX'] = '/'
-    app.config['OPENAPI_SWAGGER_UI_PATH'] = '/swagger'
-    app.config['OPENAPI_SWAGGER_UI_URL'] = 'https://cdn.jsdelivr.net/npm/swagger-ui-dist/'
 
     CORS(app)
     api = Api(app)
@@ -95,15 +100,46 @@ def create_app():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', {port_number}))
     app = create_app()
-    logger.info(f"Swagger UI: http://localhost:{port}/swagger")
     app.run(host='0.0.0.0', port=port)
 ```
 
 **CRITICAL**: Replace:
-- `{Project Name}` → Human-readable project name (e.g., "Materia Server")
-- `{project_name}` → Snake case project name (e.g., "materia_server")
+- `{Project Name}` → Human-readable project name (e.g., "My App")
+- `{project_name}` → Snake case project name (e.g., "myapp")
 - `{port_number}` → Actual port number (e.g., 5151)
 - `{feature}` → Feature name from user's response
+
+### Swagger UI enrichment (only if the user answered YES to Step 1 Q5)
+
+If the user opted in to a Swagger UI docs endpoint, add these three
+config lines to `create_app()` immediately after `OPENAPI_VERSION`, and
+add the startup-log line inside the `__main__` block:
+
+```python
+    # Only present when Swagger UI is opted in (Step 1 Q5).
+    # Vendor `swagger-ui-dist` assets under `/static/swagger-ui/` (or an
+    # internal mirror you control) and set OPENAPI_SWAGGER_UI_URL to the
+    # path you're serving them from. DO NOT point this at cdn.jsdelivr.net
+    # or any third-party CDN — prior skill versions did, which was both a
+    # supply-chain surface and a hard break in air-gapped / tailnet-only
+    # deployments.
+    app.config['OPENAPI_URL_PREFIX'] = '/'
+    app.config['OPENAPI_SWAGGER_UI_PATH'] = '/swagger'
+    app.config['OPENAPI_SWAGGER_UI_URL'] = '/static/swagger-ui/'  # TODO: vendor
+```
+
+And inside the `if __name__ == '__main__':` block, immediately after
+`app = create_app()`:
+
+```python
+    logger.info(f"Swagger UI: http://localhost:{port}/swagger")
+```
+
+**Vendoring reminder:** whichever path you point `OPENAPI_SWAGGER_UI_URL`
+at, that path must actually serve the swagger-ui-dist JS/CSS bundle. The
+usual approach is `pip install swagger-ui-bundle` (or copy the files from
+the npm package) and configure Flask to serve them from `/static/swagger-ui/`.
+If that path 404s, `/swagger` renders a broken shell.
 
 ## Step 4: Create Data Models
 
@@ -358,8 +394,8 @@ service_manager = ServiceManager()
 ```
 
 **CRITICAL**: Replace:
-- `{PROJECT_NAME}` → Uppercase project name (e.g., "MATERIA_SERVER")
-- `{project_name}` → Snake case project name (e.g., "materia_server")
+- `{PROJECT_NAME}` → Uppercase project name (e.g., "MYAPP")
+- `{project_name}` → Snake case project name (e.g., "myapp")
 
 ## Step 7: Create Environment Configuration
 
@@ -384,8 +420,8 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 
 **CRITICAL**: Replace:
 - `{port_number}` → Actual port number (e.g., 5151)
-- `{PROJECT_NAME}` → Uppercase project name (e.g., "MATERIA_SERVER")
-- `{project_name}` → Snake case project name (e.g., "materia_server")
+- `{PROJECT_NAME}` → Uppercase project name (e.g., "MYAPP")
+- `{project_name}` → Snake case project name (e.g., "myapp")
 
 ### File: `.env` (gitignored)
 
@@ -478,10 +514,14 @@ Copy `example.env` to `.env` and configure:
 
 ### API Documentation
 
-Once running, access Swagger UI at:
+(Only applicable if Swagger UI was opted in during Step 1 Q5.)
+
+If enabled, access Swagger UI at:
 ```
 http://localhost:{port_number}/swagger
 ```
+Requires `swagger-ui-dist` assets to be served under
+`OPENAPI_SWAGGER_UI_URL`; see the Swagger UI enrichment note in Step 3.
 
 ## Design Principles
 
