@@ -768,6 +768,37 @@ def test_keyboard_interrupt_during_rollback_propagates():
         with db.get_connection() as conn:
             conn.rollback.side_effect = KeyboardInterrupt
             raise ValueError("app error mid-transaction")
+
+
+def test_success_path_silent_close_discards_conn():
+    """The success-path `conn.closed` check must discard a silently-broken socket.
+
+    Regression guard for the v1.18.6 F2 fix: caller exits cleanly (no
+    exception), `conn.commit()` succeeds, but by the time control
+    returns from the with-body the socket has been silently closed —
+    only `conn.closed` carries that signal; there's no exception class
+    to discriminate by. Without this test, the success-branch
+    `conn_dead = getattr(conn, "closed", 0) != 0` line has zero
+    coverage, and a future refactor could silently drop it while every
+    other test still passes.
+
+    Symmetric with `test_mid_flight_silent_close_uses_closed_flag` /
+    the exception-path silent-close tests — those exercise the
+    exception branch's `conn.closed` check; this exercises the
+    success branch's.
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([alive])
+
+    with db.get_connection() as conn:
+        # No exception raised. But the socket is silently closed
+        # by the time control returns from the with-body — only
+        # the `closed` flag carries that signal.
+        conn.closed = 2
+
+    # Success-path silent-close MUST discard (close=True), not recycle
+    # a corpse for the next caller to eat pre-ping latency on.
+    db.pool.putconn.assert_called_once_with(alive, close=True)
 ```
 
 ## Design Principles
