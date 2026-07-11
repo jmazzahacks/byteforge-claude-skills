@@ -344,9 +344,19 @@ logger = logging.getLogger(__name__)
 # Errors that mean "this socket is unusable — discard, do not recycle."
 _DEAD_CONN_ERRORS = (psycopg2.OperationalError, psycopg2.InterfaceError)
 
-# How many times to retry checkout when pre-ping fails. Enough to drain
-# a pool full of corpses after Postgres restarts; not so high that we
-# spin forever if Postgres is genuinely down.
+# How many times to retry checkout when pre-ping fails PER REQUEST.
+# 3 is calibrated for the default pool (`min_conn=2`) — it drains a
+# fully-dead pool in a single post-restart request. Consumers that
+# raise `min_conn` above 3 (e.g. `min_conn=10` for concurrent Flask
+# workers) accept that post-restart recovery then takes
+# `ceil(min_conn / MAX_HEALTH_RETRIES)` requests to fully drain the
+# corpse queue — the first few requests still 500 with the RuntimeError
+# raised below. This constant is deliberately NOT tunable higher
+# (would cause requests to spin under a genuine Postgres outage);
+# a burst of post-restart 500s is the price of not compounding a real
+# outage into a request-latency stampede. If your service can't
+# tolerate a post-restart burst, put a smarter retry / circuit-breaker
+# at the request layer, not here.
 MAX_HEALTH_RETRIES = 3
 
 
@@ -816,7 +826,7 @@ This pattern follows these principles:
 1. **Connection pooling** - Use ThreadedConnectionPool for efficient connection reuse
 2. **TCP keepalives** - Enable keepalives on all pooled connections so the OS detects silently dropped sockets within ~80s
 3. **Pre-ping on every checkout** - Run `SELECT 1` before yielding a pooled connection; on failure, discard with `putconn(close=True)` so the pool refills with a fresh socket
-4. **Retry budget** - Allow up to `MAX_HEALTH_RETRIES` (3) pre-ping retries so a pool full of corpses self-heals in one request after Postgres comes back up; final failure raises `from last_err`
+4. **Retry budget** - Allow up to `MAX_HEALTH_RETRIES` (3) pre-ping retries PER REQUEST. For the default pool (`min_conn=2`) this drains a fully-dead pool in a single post-restart request. Consumers that raise `min_conn > MAX_HEALTH_RETRIES` (e.g. `min_conn=10` for concurrent Flask workers) accept that post-restart recovery takes `ceil(min_conn / MAX_HEALTH_RETRIES)` requests to drain — the first few still 500 with the RuntimeError raised from `last_err`. The constant is deliberately not tunable higher: a large retry budget would cause requests to spin under a genuine Postgres outage. If a post-restart 500-burst is unacceptable for the service, put a smarter retry / circuit-breaker at the request layer, not here.
 5. **Mid-flight discard vs recycle** - Distinguish unsafe conns (rollback raises ANY error — dead socket OR transaction-state corruption — OR `conn.closed != 0`) from app-level errors on healthy conns where rollback succeeded cleanly (`SerializationFailure` / `DeadlockDetected` / `QueryCanceled` / `LockNotAvailable` — all `OperationalError` subclasses that fire on live conns). Healthy conns recycle into the pool; unsafe conns discard with `putconn(close=True)`. Note psycopg2 only flips `conn.closed` on actual socket death, not on transaction-state corruption — so the rollback-failure signal is what catches the case where the socket is alive but the previous caller's writes may still be pending. The naïve "any `OperationalError` → close=True" pattern churns the pool under serializable-isolation or timeout-bounded workloads.
 6. **Best-effort cleanup** - rollback / cursor.close / putconn must not raise dead-conn errors over the caller's original exception. Catch `Exception`, not `BaseException`, so `KeyboardInterrupt` / `SystemExit` still propagate; log any swallowed failure with `logger.exception` so silent observability gaps don't compound under load.
 7. **Context managers** - Automatic commit/rollback and resource cleanup
