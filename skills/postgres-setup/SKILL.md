@@ -152,7 +152,7 @@ def main():
             cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", ({project_name}_user,))
             if not cursor.fetchone():
                 print(f"Creating user '{{project_name}_user}'...")
-                cursor.execute(f"CREATE USER {project_name}_user WITH PASSWORD %s", ({project_name}_password,))
+                cursor.execute(f"CREATE USER {{project_name}_user} WITH PASSWORD %s", ({project_name}_password,))
                 print(f"✓ User '{{project_name}_user}' created")
             else:
                 print(f"✓ User '{{project_name}_user}' already exists")
@@ -171,7 +171,7 @@ def main():
 
         conn.close()
 
-        print(f"\\nConnecting as '{{project_name}_user}' to apply schema...")
+        print(f"\nConnecting as '{{project_name}_user}' to apply schema...")
         {project_name}_conn = psycopg2.connect(
             host=pg_host,
             port=pg_port,
@@ -792,10 +792,11 @@ def test_success_path_silent_close_discards_conn():
     coverage, and a future refactor could silently drop it while every
     other test still passes.
 
-    Symmetric with `test_mid_flight_silent_close_uses_closed_flag` /
-    the exception-path silent-close tests — those exercise the
-    exception branch's `conn.closed` check; this exercises the
-    success branch's.
+    Symmetric with `test_value_error_on_silently_dead_conn_discards` —
+    that test exercises the exception branch's `conn.closed` check
+    (silent close observed after an exception in the with-body); this
+    one exercises the success branch's (silent close observed after a
+    clean exit from the with-body).
     """
     alive = _alive_conn()
     db = _make_db_with_mocked_pool([alive])
