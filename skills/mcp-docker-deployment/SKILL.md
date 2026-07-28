@@ -28,7 +28,7 @@ Ask the user:
 5. **"What container registry URL?"** (e.g., `ghcr.io/{org}/{project}`)
 6. **"Does the MCP server need any environment variables?"** (list them for docker-compose and example.env)
 7. **"Will this be behind an nginx reverse proxy with HTTPS?"** (yes/no - if yes, include nginx config)
-8. **"Does it have private pip dependencies?"** (yes/no - if yes, needs CR_PAT build arg)
+8. **"Does it have private pip dependencies?"** (yes/no - if yes, needs CR_PAT via BuildKit secret mount)
 
 ## Step 2: Create Dockerfile
 
@@ -64,14 +64,28 @@ CMD ["python", "{entry_point}"]
 > ENV FASTMCP_PORT=8000
 > ```
 
-If private pip dependencies, add before `pip install`:
+If private pip dependencies, replace the plain `pip install` line above with a
+BuildKit secret mount + scrub block. CR_PAT enters via `--mount=type=secret`
+(never recorded in `docker history`), and the RUN scrubs pip's install
+metadata (both `direct_url.json` records and hatchling-baked `METADATA` lines)
+and self-verifies — the build FAILS if any token byte survives in
+site-packages. Requires BuildKit (default in Docker 23+; for older Docker,
+`export DOCKER_BUILDKIT=1`).
+
 ```dockerfile
-ARG CR_PAT
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
-    && git config --global url."https://${CR_PAT}@github.com/".insteadOf "https://github.com/" \
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=secret,id=cr_pat \
+    export CR_PAT="$(cat /run/secrets/cr_pat)" \
     && pip install --no-cache-dir -r requirements.txt \
-    && git config --global --unset url."https://${CR_PAT}@github.com/".insteadOf
+    && find /usr/local/lib/python3.13/site-packages -name direct_url.json -delete \
+    && grep -rl "${CR_PAT}" /usr/local/lib/python3.13/site-packages | xargs -r sed -i "s|${CR_PAT}|REDACTED|g" \
+    && ! grep -rq "${CR_PAT}" /usr/local/lib/python3.13/site-packages
 ```
+
+Do NOT use `ARG CR_PAT` + `--build-arg`: any layer that consumes the ARG
+records the value verbatim in `docker history`, readable by anyone who can
+pull the image. And never `ENV CR_PAT=...` — that bakes the live token into
+`.Config.Env` where `docker inspect` prints it.
 
 ## Step 3: Configure Transport in MCP Server
 
@@ -287,7 +301,11 @@ echo "$NEXT_VERSION" > VERSION
 echo "Published ${REGISTRY}:${NEXT_VERSION} and :latest"
 ```
 
-If private dependencies, add `--build-arg CR_PAT=$CR_PAT` to `docker build`.
+If private dependencies, add `--secret id=cr_pat,env=CR_PAT` to `docker build` — the
+Dockerfile's `--mount=type=secret,id=cr_pat` will read the value from the env-backed
+secret. Do NOT use `--build-arg CR_PAT=$CR_PAT`: it records the token in every
+layer that consumes the ARG, visible via `docker history --no-trunc` to anyone
+who can pull the image.
 
 Make executable: `chmod +x build-publish.sh`
 

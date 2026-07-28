@@ -66,13 +66,6 @@ Create `Dockerfile` in the project root:
 ```dockerfile
 FROM python:3.13-slim
 
-# Build-time token for cloning private GitHub deps. ARG ONLY — do NOT add an
-# `ENV CR_PAT=${CR_PAT}` line. ARG makes the value available to the RUN steps
-# below (which is all that's needed for the git config trick), while ENV would
-# bake the live token into the final image's environment, where it is readable
-# by anyone who runs `docker inspect`. See Step 6 for the verification check.
-ARG CR_PAT
-
 # Install curl (for health checks) and git (for private GitHub dependencies)
 RUN apt-get update && apt-get install -y \
     curl \
@@ -84,10 +77,23 @@ WORKDIR /app
 # Copy requirements and install dependencies
 COPY requirements.txt .
 
-# Configure git to use PAT for GitHub access (if private deps)
-RUN git config --global url."https://${CR_PAT}@github.com/".insteadOf "https://github.com/" \
+# Install deps via a BuildKit secret mount so CR_PAT is NEVER recorded in
+# `docker history` and never lands in any image layer. The final RUN steps
+# scrub the token out of pip's install metadata (both direct_url.json
+# records and hatchling-baked METADATA lines) and self-verify — the build
+# FAILS if any token byte survives in site-packages. Requires BuildKit,
+# which is the default in Docker 23+; for older Docker,
+# `export DOCKER_BUILDKIT=1`.
+#
+# Do NOT re-introduce `ARG CR_PAT` + `--build-arg`: any layer that consumes
+# the ARG records the value verbatim in `docker history`, readable by
+# anyone who can pull the image.
+RUN --mount=type=secret,id=cr_pat \
+    export CR_PAT="$(cat /run/secrets/cr_pat)" \
     && pip install --no-cache-dir -r requirements.txt \
-    && git config --global --unset url."https://${CR_PAT}@github.com/".insteadOf
+    && find /usr/local/lib/python3.13/site-packages -name direct_url.json -delete \
+    && grep -rl "${CR_PAT}" /usr/local/lib/python3.13/site-packages | xargs -r sed -i "s|${CR_PAT}|REDACTED|g" \
+    && ! grep -rq "${CR_PAT}" /usr/local/lib/python3.13/site-packages
 
 # Copy application code
 COPY . .
@@ -125,7 +131,8 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
 
 **If NO private dependencies**, remove these lines:
 ```dockerfile
-# Remove ARG CR_PAT, git installation, and git config commands
+# Remove `git` from apt-get, and replace the secret-mount RUN block
+# with a plain `RUN pip install --no-cache-dir -r requirements.txt`
 ```
 
 Simplified version without private deps:
@@ -198,8 +205,10 @@ VERSION=$((CURRENT_VERSION + 1))
 
 echo "Building version $VERSION (incrementing from $CURRENT_VERSION)"
 
-# Build the image with optional --no-cache flag
-docker build $NO_CACHE --build-arg CR_PAT=$CR_PAT --platform linux/amd64 -t {registry_url}:$VERSION .
+# Build the image with optional --no-cache flag.
+# --secret exposes CR_PAT to the Dockerfile's secret mount ONLY during
+# the RUN that consumes it — the value is never recorded in `docker history`.
+docker build $NO_CACHE --secret id=cr_pat,env=CR_PAT --platform linux/amd64 -t {registry_url}:$VERSION .
 
 # Tag the same image as latest
 docker tag {registry_url}:$VERSION {registry_url}:latest
@@ -216,7 +225,7 @@ echo "Updated $VERSION_FILE to version $VERSION"
 **CRITICAL Replacements:**
 - `{registry_url}` → Full container registry URL (e.g., `ghcr.io/{org}/my-flask-app`)
 
-**If NO private dependencies**, remove `--build-arg CR_PAT=$CR_PAT`:
+**If NO private dependencies**, remove `--secret id=cr_pat,env=CR_PAT`:
 ```bash
 docker build $NO_CACHE --platform linux/amd64 -t {registry_url}:$VERSION .
 ```
@@ -410,13 +419,25 @@ curl http://localhost:{port}/health
 
 ### Verify the Token Did Not Leak (private deps only)
 
-The `ARG`-not-`ENV` rule above only holds if it's actually followed. Prove the
-token isn't baked into the image before publishing:
+The secret-mount + scrub RUN in the Dockerfile self-verifies at build time —
+if any token byte survives in site-packages, the build fails. Still, prove
+all three post-build surfaces are clean before publishing:
 
 ```bash
-# Should print NOTHING. If it prints CR_PAT=..., the token leaked into the image —
-# go back and remove any `ENV CR_PAT=...` line from the Dockerfile.
+# 1. .Config.Env — should print NOTHING. If it prints CR_PAT=..., an
+#    `ENV CR_PAT=...` line snuck back into the Dockerfile.
 docker inspect {project}:test --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -i CR_PAT
+
+# 2. docker history — should print 0. If it prints a non-zero count, the
+#    Dockerfile is back on `ARG CR_PAT` + `--build-arg` (which records the
+#    value in every layer that consumes it, readable by anyone who can pull).
+docker history --no-trunc {project}:test | grep -c "$CR_PAT"
+
+# 3. site-packages metadata — should print NOTHING. If it prints paths, the
+#    Dockerfile is missing the direct_url.json / METADATA scrub, and pip's
+#    install records still contain the resolved tokenized URL.
+docker run --rm --entrypoint sh {project}:test -c \
+    "grep -rl '$CR_PAT' /usr/local/lib/python3.13/site-packages 2>/dev/null"
 ```
 
 **If a token was ever baked into a previously published image**, fixing the
@@ -431,7 +452,7 @@ This pattern follows these principles:
 ### Security:
 1. **Non-root user** - Container runs as unprivileged user
 2. **Minimal base image** - python:3.11-slim reduces attack surface
-3. **Build-time secrets** - CR_PAT only available during build, not in final image
+3. **Build-time secrets** - CR_PAT enters the build via a BuildKit secret mount, is scrubbed from pip's install metadata inside the same RUN, and never appears in `docker history` or any image layer. The build self-verifies with `! grep -rq` — a surviving token byte fails the build.
 4. **Explicit permissions** - chown ensures correct file ownership
 
 ### Reliability:
@@ -626,6 +647,13 @@ FROM python:3.13-slim as builder
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
+
+# For private GitHub deps, install `git` in this stage and replace the
+# pip install line with the same secret-mount + scrub pattern from Step 2 —
+# but scrub `/root/.local/lib/python3.13/site-packages` (that's where
+# `pip install --user` writes). The scrubbed --user tree is what gets
+# COPY'd into the runtime stage, so a leak here follows the image
+# downstream just as it would in the single-stage build.
 
 # Runtime stage
 FROM python:3.13-slim
