@@ -217,6 +217,7 @@ import logging
 from flask import request, jsonify
 from flask.views import MethodView
 from flask_smorest import Blueprint, abort
+from werkzeug.exceptions import HTTPException
 
 from models.{feature} import {Feature}
 
@@ -241,6 +242,8 @@ class {Feature}ListResource(MethodView):
                 "limit": limit,
                 "offset": offset
             })
+        except HTTPException:
+            raise
         except ValueError as e:
             logger.warning(f"Bad request: {e}")
             abort(400, message=str(e))
@@ -260,6 +263,8 @@ class {Feature}ListResource(MethodView):
             # TODO: Implement logic to save {feature}
 
             return jsonify(item.to_dict()), 201
+        except HTTPException:
+            raise
         except ValueError as e:
             logger.warning(f"Validation error: {e}")
             abort(400, message=str(e))
@@ -280,6 +285,8 @@ class {Feature}Resource(MethodView):
                 abort(404, message=f"{Feature} not found: {item_id}")
 
             return jsonify(item.to_dict())
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception(f"Error fetching {feature}: {e}")
             abort(500, message="Internal server error")
@@ -294,6 +301,8 @@ class {Feature}Resource(MethodView):
             # TODO: Implement logic to update {feature}
 
             return jsonify({"message": "Updated"})
+        except HTTPException:
+            raise
         except ValueError as e:
             logger.warning(f"Validation error: {e}")
             abort(400, message=str(e))
@@ -307,6 +316,8 @@ class {Feature}Resource(MethodView):
             # TODO: Implement logic to delete {feature}
 
             return jsonify({"message": "Deleted"})
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception(f"Error deleting {feature}: {e}")
             abort(500, message="Internal server error")
@@ -315,6 +326,18 @@ class {Feature}Resource(MethodView):
 **CRITICAL**: Replace:
 - `{Feature}` → PascalCase feature name (e.g., "TradableToken")
 - `{feature}` → Snake case feature name (e.g., "tradable_token")
+
+**CRITICAL**: Every handler above starts its `except` chain with
+`except HTTPException: raise`. This arm is REQUIRED — `flask_smorest.abort()`
+raises `werkzeug.exceptions.HTTPException`, which is an `Exception` subclass,
+so any `abort(400, ...)` / `abort(404, ...)` fired inside a `try` block will
+otherwise be swallowed by the terminal `except Exception` arm and re-emitted
+as `abort(500, "Internal server error")` — clients get 500s for their own bad
+input, and logs fill with spurious `logger.exception` stack traces for
+routine validation. **When adding a new handler, keep this arm as the FIRST
+`except` clause.** Move unconditional aborts (e.g., `if not data: abort(400)`)
+outside the try when possible; the arm still catches the inevitable in-try
+aborts (`if not item: abort(404)` after a lookup).
 
 ## Step 6: Create Common Singleton Manager (If Needed)
 
