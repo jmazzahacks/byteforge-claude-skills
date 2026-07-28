@@ -175,6 +175,15 @@ Create `build-publish.sh` in the project root:
 ```bash
 #!/bin/sh
 
+# Anchor to the script's directory so VERSION, Dockerfile, and `.` all
+# resolve to the project root — not the caller's cwd. Without this,
+# running as `./myapp/build-publish.sh` from a parent directory writes
+# a stray VERSION file in the parent, uses the parent as build context
+# (which in a multi-repo workspace can sweep sibling projects' venvs —
+# and their token-bearing pip metadata — into the image), and corrupts
+# this project's version tracking.
+cd "$(dirname "$0")" || exit 1
+
 # VERSION file path
 VERSION_FILE="VERSION"
 
@@ -208,16 +217,21 @@ echo "Building version $VERSION (incrementing from $CURRENT_VERSION)"
 # Build the image with optional --no-cache flag.
 # --secret exposes CR_PAT to the Dockerfile's secret mount ONLY during
 # the RUN that consumes it — the value is never recorded in `docker history`.
-docker build $NO_CACHE --secret id=cr_pat,env=CR_PAT --platform linux/amd64 -t {registry_url}:$VERSION .
+#
+# `|| exit 1` on every docker call is essential: without it, a failed
+# build followed by a successful push of a locally-cached `:latest`
+# silently ships stale code to the registry AND burns a version number,
+# with exit code 0 — invisible in CI.
+docker build $NO_CACHE --secret id=cr_pat,env=CR_PAT --platform linux/amd64 -t {registry_url}:$VERSION . || exit 1
 
 # Tag the same image as latest
-docker tag {registry_url}:$VERSION {registry_url}:latest
+docker tag {registry_url}:$VERSION {registry_url}:latest || exit 1
 
 # Push both tags
-docker push {registry_url}:$VERSION
-docker push {registry_url}:latest
+docker push {registry_url}:$VERSION || exit 1
+docker push {registry_url}:latest || exit 1
 
-# Update the VERSION file with the new version
+# Update the VERSION file with the new version (only reached on push success)
 echo "$VERSION" > "$VERSION_FILE"
 echo "Updated $VERSION_FILE to version $VERSION"
 ```

@@ -246,6 +246,14 @@ if __name__ == "__main__":
 # Build and publish MCP Docker image
 # Usage: ./build-publish.sh [--no-cache]
 
+# Anchor to the script's directory so VERSION, Dockerfile, and `.` all
+# resolve to the project root — not the caller's cwd. Without this,
+# running as `./myapp/build-publish.sh` from a parent directory writes
+# a stray VERSION in the parent, uses the parent as build context (which
+# in a multi-repo workspace can sweep sibling projects into the image),
+# and corrupts this project's version tracking.
+cd "$(dirname "$0")" || exit 1
+
 REGISTRY="{registry_url}"
 
 NO_CACHE=""
@@ -282,6 +290,10 @@ if [ $? -ne 0 ]; then
 fi
 
 docker tag "${REGISTRY}:${NEXT_VERSION}" "${REGISTRY}:latest"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Docker tag failed"
+    exit 1
+fi
 
 echo "Pushing ${REGISTRY}:${NEXT_VERSION}..."
 docker push "${REGISTRY}:${NEXT_VERSION}"
