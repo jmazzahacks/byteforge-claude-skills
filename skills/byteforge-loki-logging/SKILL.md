@@ -26,11 +26,11 @@ Use this skill when:
 
 **IMPORTANT**: Before making changes, ask the user these questions:
 
-1. **"What is your application tag/name?"** (e.g., "materia-server", "trading-api")
+1. **"What is your application tag/name?"** (e.g., "myapp", "another-service")
    - This identifies your service in Loki logs
    - This becomes the `application` label in Loki — all services across the stack (Python and TypeScript) **must** use `application` as the label name, never `app` or `service`
 
-2. **"What is your main application file?"** (e.g., "app.py", "server.py", "materia_server.py")
+2. **"What is your main application file?"** (e.g., "app.py", "server.py", "myapp.py")
    - Where to add the logging configuration
 
 3. **"What is your CA certificate filename?"** (e.g., "loki-ca.pem", "my-org-ca.pem")
@@ -71,8 +71,8 @@ configure_logging(
 ```
 
 **CRITICAL**: Replace:
-- `{app_file}` -> Your main application filename (e.g., "materia_server")
-- `{application_tag}` -> Your service name (e.g., "materia-server")
+- `{app_file}` -> Your main application filename (e.g., "myapp")
+- `{application_tag}` -> Your service name (e.g., "myapp")
 
 Place this **before** creating your Flask app or any other initialization.
 
@@ -343,6 +343,21 @@ process.start()
 
 Use this section when integrating with an MCP server built on `FastMCP` (the high-level wrapper in the `mcp` Python SDK). Verified end-to-end against `mcp==1.27.x` / FastMCP `streamable-http` and `sse` transports on 2026-05-18.
 
+> **`mcp` package version — bound to `<2.0`.** Every import and constructor
+> in this section (`from mcp.server.fastmcp import FastMCP`, `FastMCP(...)`,
+> `mcp.streamable_http_app()`, `Context` from `mcp.server.fastmcp`) is 1.x
+> API. The 2.0.0 release (2026-07-28) renamed `FastMCP` → `MCPServer` and
+> moved `mcp.server.fastmcp` → `mcp.server.mcpserver`, so this example
+> silently breaks on the first fresh install that resolves to 2.x. Bound
+> the requirement in your project's `requirements.txt`:
+>
+> ```txt
+> mcp>=1.3,<2.0
+> ```
+>
+> See the `mcp-docker-deployment` skill's `requirements.txt` subsection
+> for the full rationale and the deliberate-migration path to 2.x.
+
 #### The problem
 
 FastMCP's `mcp.run(transport="streamable-http")` internally constructs a `uvicorn.Config` **without** passing `log_config=`. uvicorn falls back to its default `LOGGING_CONFIG`, which attaches its own `StreamHandler` instances to the `uvicorn`, `uvicorn.access`, and `uvicorn.error` loggers with `propagate=False`. Those records bypass Python's root logger entirely, which means the `configure_logging()` handler we installed on root never sees them — and HTTP access logs (`POST /mcp ... 200`) **never reach Loki**. The container looks alive (you can `curl` the MCP successfully), but Loki shows nothing under `application=<your-tag>`.
@@ -604,7 +619,7 @@ If your MCP server runs only over stdio (e.g. for local use with Claude Code, no
 ## Example Implementation
 
 ```python
-# materia_server.py
+# myapp.py
 import os
 import logging
 from flask import Flask
@@ -615,7 +630,7 @@ def create_app() -> Flask:
     debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
     log_level = os.environ.get('LOG_LEVEL', 'INFO')
     configure_logging(
-        application_tag='materia-server',
+        application_tag='myapp',
         debug_local=debug_mode,
         local_level=log_level,
     )
@@ -642,7 +657,7 @@ app = create_app()
 ```yaml
 # docker-compose.yaml
 services:
-  materia-server:
+  myapp:
     volumes:
       - ./certs/loki-ca.pem:/app/certs/loki-ca.pem:ro
     environment:
