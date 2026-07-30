@@ -87,6 +87,34 @@ records the value verbatim in `docker history`, readable by anyone who can
 pull the image. And never `ENV CR_PAT=...` — that bakes the live token into
 `.Config.Env` where `docker inspect` prints it.
 
+### requirements.txt
+
+The template code in Step 3 imports from `mcp.server.fastmcp` (Path A) or
+`mcp.server.*` submodules (Path B). Those import paths only exist in the
+`mcp` package's 1.x line — the 2.0.0 release (2026-07-28) renamed
+`FastMCP` → `MCPServer`, moved `mcp.server.fastmcp` → `mcp.server.mcpserver`,
+and made other breaking API changes. **Bound the `mcp` requirement to
+`<2.0`** so a fresh Docker build (especially with `--no-cache`) can't
+silently resolve into 2.x and crash-loop on
+`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`:
+
+```txt
+# requirements.txt
+# Bounded to <2.0 — the 2.0 rewrite renames FastMCP and moves the
+# module paths this template uses. Unbounding without migrating the
+# server code will build green locally (against a pre-existing 1.x
+# venv) and crash-loop on the first --no-cache rebuild.
+mcp>=1.3,<2.0
+```
+
+`mcp` 1.x is in maintenance mode (security fixes only); the 2.x rewrite is
+far enough that migrating warrants a considered code change, not an
+accidental resolve during a rebuild. Migrate by removing the upper bound
+AND updating imports/constructor to the 2.x API in the same commit.
+
+Low-level SDK (Path B) servers also need `uvicorn` and `starlette` in
+requirements.txt — FastMCP bundles those, the low-level SDK does not.
+
 ## Step 3: Configure Transport in MCP Server
 
 ### Path A: FastMCP (`mcp.server.fastmcp.FastMCP`)
