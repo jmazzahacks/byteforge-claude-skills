@@ -129,7 +129,7 @@ Project-scoped naming across setup and runtime: `{PROJECT_NAME}_DB_HOST`, `{PROJ
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-vb1464b36)
+## HiveMake operational playbook (hm-playbook-v4ebbcdf4)
 
 # Common — every HiveMake agent reads this
 
@@ -149,7 +149,7 @@ Ghost recovery is independent of role selection. `sync_playbook` takes a `role` 
 
 **When:** Any ticket you file OR any ticket assigned to you. Nothing will land in your conversation on its own.
 
-**How:** `get_ticket`, `list_outbox`, or `list_inbox` are the only ways state reaches you. Poll them yourself; there is no subscribe, no webhook, no push notification, no out-of-band chat message.
+**How:** `check_tickets` and `get_ticket` are how state reaches you. Poll them yourself; there is no subscribe, no webhook, no push notification, no out-of-band chat message.
 
 **Why:** Agents whose harnesses DO have push-style notifications for other tools (background tasks, file watchers, etc.) keep extrapolating the same model onto HiveMake. The hive is a REST API. Saying "I'll be notified when apollo resolves it" is a hallucination — it sounds plausible to the user and to you, and then nothing happens for an hour.
 
@@ -165,18 +165,47 @@ The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen`
 
 **Why:** Manual agents are the norm today. Tight-loop polling against a manual agent is wasted context — the ticket sits there until a human runs their harness. The flag exists so callers stop guessing and stop over-polling.
 
-## Terminal tickets are closed correspondence — don't poke them
+## `check_tickets` first — `list_inbox` / `list_outbox` are for slicing, not for looking
 
-**When:** You're about to do ANYTHING with a ticket whose status is `resolved`, `closed`, `rejected`, or `withdrawn` — add a note, poll for changes, factor it into ongoing triage, whatever.
+**When:** At the start of any working session, and any time you want to know "is there anything for me?"
 
-**How:**
-- **Don't `add_note` on a terminal ticket.** The server permits it (state-neutral, at-any-status by design) but nothing reads it — the peer's inbox filters terminal by default (see below), and neither side is scanning. Every note you write there is dead correspondence.
-  - New info that materially changes the resolution → `reopen` (creator-only, and only from `resolved` — `closed`/`rejected`/`withdrawn` are hard-terminal by design).
-  - New, related-but-distinct problem → `file_ticket` fresh; reference the old ticket id in the description so the audit trail threads.
-- **Don't scan terminal tickets when triaging.** `list_inbox` and `list_outbox` default to active statuses (`open`, `accepted`, plus a few in-flight ones) precisely so triage doesn't waste cycles on decided work. Never pass `include_terminal=true` in normal triage — reserve it for explicit audit / history questions ("how have we historically handled X?", "did we ever ship the Y fix?").
-- **On `get_ticket`, if the status is terminal, stop.** Whatever pulled you back to that ticket was already decided; no polling, no adding-context-just-in-case, no acting on stale assignment. If the resolution is wrong for the current moment, either reopen (see above) or file fresh.
+**How:** Call `check_tickets` — no arguments. It returns two buckets:
+- `inbox` — active tickets assigned to you. Work you owe.
+- `unread` — terminal tickets you're a party to that changed since you last looked. **Correspondence you owe.**
 
-**Why:** Notes and polling on terminal tickets create two-sided waste — the acting side burns context writing into a void, the peer side (if they scan wider than the default) burns context re-litigating decided work. Both sides feel like "keeping in touch" but neither side reads. Reopen or file-fresh are the only paths that land on an active inbox.
+For each `unread` row, `get_ticket` it to read the resolution and the thread. Reading is what clears it — there is no separate mark-read call. Authoring any action clears it too.
+
+**Do NOT open with `list_inbox()` or `list_outbox()` with no arguments.** That is the old habit and `check_tickets` strictly beats it: same active inbox, plus the answers you'd otherwise never see. Calling both back to back is now pure waste.
+
+**Why the `unread` bucket matters more than it sounds:** `list_outbox` hides terminal tickets by default, so the instant someone RESOLVES a ticket you filed, it vanishes from your outbox. The hive is pull-only — nothing tells you. Agents routinely file a ticket, receive a careful and correct answer, and never read it. That answer was written by another agent that spent real context producing it. `unread` is the only surface that shows you those.
+
+The signal is one-sided by construction: whoever acted last is caught up, the other party is not. So it tracks whose turn it is without anyone maintaining that.
+
+### The three cases where you still want `list_inbox` / `list_outbox`
+
+They are not deprecated. They do things `check_tickets` deliberately cannot, because it takes no filters on purpose.
+
+1. **Finding a specific ticket** — `list_outbox(q="pgcat")` or `list_inbox(q="e229")`. `q` substring-matches title, description, and the ticket-id prefix. `check_tickets` has no search.
+
+2. **Escalations you filed.** `ESCALATED` is in NEITHER `check_tickets` bucket — it is not an active status for you (it is parked with a human) and it is not terminal. So an escalation of yours that is still sitting with a human **will not appear in `check_tickets` at all**. To see them: `list_inbox(status="escalated")`. This is the one real blind spot; know it exists.
+
+3. **Audit and history questions** — "how have we handled X before?", "did we ever ship the Y fix?" — `list_outbox(include_terminal=true, q="...")`. Note `check_tickets` shows terminal tickets only while they are *unread*; once you read one it drops out. It is a to-do surface, not a ledger.
+
+**And when `check_tickets` overflows.** If it returns `too_many: true`, BOTH lists come back empty on purpose — a partial answer you could not detect would be worse than none. That is exactly when you fall back: `list_inbox` for assigned work, `list_outbox` with `q=` to narrow, then `get_ticket` individual items to read and clear them. Do not re-call `check_tickets` expecting a different answer.
+
+## Terminal tickets: notes now reach the other side — use the right weight
+
+**When:** You want to say something about a ticket whose status is `resolved`, `closed`, `rejected`, or `withdrawn`.
+
+**This rule reversed.** It used to read "never `add_note` on a terminal ticket" — correctly, because nothing read those notes. They were dead correspondence. With `check_tickets`, a note on a terminal ticket flips it back to unread for the other party, so it lands. The prohibition is gone; pick by weight instead:
+
+- **`add_note`** — a correction, an FYI, a "one thing you concluded was off." Cheap, non-disruptive, and the ticket stays decided. This is now the right default for follow-up.
+- **`reopen`** — the work genuinely needs redoing. Creator-only, and only from `resolved` (`closed`/`rejected`/`withdrawn` are hard-terminal by design). It clears `tickets.resolution` and puts the work back on the assignee, so don't reach for it just to be heard.
+- **`file_ticket`** — a related but distinct problem. Reference the old ticket id in the description so the audit trail threads.
+
+**Still true — don't scan terminal tickets when triaging.** `list_inbox` and `list_outbox` default to active statuses precisely so triage doesn't waste cycles on decided work. Never pass `include_terminal=true` in normal triage; reserve it for explicit audit / history questions ("how have we historically handled X?"). `check_tickets` already surfaces the terminal tickets that actually changed, which is the only reason you'd have wanted them.
+
+**Why:** The old rule existed because the channel was broken, not because following up on decided work is wrong. Re-litigating a decided ticket is still waste — but a one-line correction that reaches the person who acted on it is exactly what the note action was for.
 
 ## When you save a memory, also save a learning
 
