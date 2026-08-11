@@ -444,9 +444,15 @@ class Database:
         """
         Yield a healthy pooled connection.
 
-        Pre-pings before yielding. If the pool hands out a dead conn,
-        discards it (so the pool refills with a fresh socket) and retries
-        up to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
+        Pre-pings before yielding. Checkout is a two-arm try/except:
+        `pool.getconn()` uses the class-based `_is_dead_conn_error`
+        classifier (propagate on non-dead-conn errors), then `_check_alive`
+        treats ANY exception as dead — `SELECT 1` has no legitimate
+        non-dead failure mode, and psycopg2 can raise the bare
+        `DatabaseError` parent (not `OperationalError`) when it detects
+        EOF before `conn.closed` flips, which the classifier misses.
+        On dead-conn signals, discards with close=True and retries up
+        to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
         RuntimeError chained from the last underlying error.
 
         Mid-flight handling discriminates between unsafe conns —
@@ -461,24 +467,49 @@ class Database:
             conn = None
             try:
                 conn = self.pool.getconn()
-                self._check_alive(conn)
-            except BaseException as e:
-                # Checkout/probe failed. Always discard with close=True —
-                # we don't trust a conn that failed pre-ping. Decide
-                # retry-vs-propagate from whether the error means
-                # "dead socket" (retry until budget) or "something else"
-                # like KeyboardInterrupt / OSError / a non-dead OperationalError
-                # (propagate immediately so the caller sees the real cause).
+            except Exception as e:
+                # Pool checkout failed. Discriminate by class — a
+                # non-dead-conn exception here (a bug in the pool
+                # itself, a non-dead OperationalError) should propagate
+                # immediately so the caller sees the real cause; a
+                # dead-conn signal counts against the retry budget.
+                # `except Exception` (not `BaseException`): signals
+                # bypass this handler and propagate directly, matching
+                # the mid-flight cleanup arm's established design.
                 dead = self._is_dead_conn_error(conn, e)
                 self._safe_putback(self.pool, conn, close=True)
                 if dead:
                     last_err = e
                     logger.warning(
-                        "DB checkout pre-ping failed (attempt %d/%d): %s",
+                        "DB pool getconn failed (attempt %d/%d): %s",
                         attempt + 1, MAX_HEALTH_RETRIES, e,
                     )
                     continue
                 raise
+
+            try:
+                self._check_alive(conn)
+            except Exception as e:
+                # Pre-ping failed. `SELECT 1` has no legitimate failure
+                # mode other than a dead socket — treat any exception
+                # as dead regardless of psycopg2 exception class. This
+                # covers the bare `DatabaseError` raised when psycopg2
+                # detects EOF (PQgetResult NULL) before `PQstatus` flips
+                # `conn.closed` to non-zero — the classifier can't see
+                # that as dead, and pre-split it surfaced as a raw 500
+                # on the caller (real prod incident, ticket 5193642b).
+                # `except Exception` (not `BaseException`): signals
+                # during pre-ping propagate directly. A conn leak on
+                # signal-during-cleanup is acceptable because it almost
+                # always means process exit, where the OS reclaims
+                # the socket anyway — matches the mid-flight arm.
+                self._safe_putback(self.pool, conn, close=True)
+                last_err = e
+                logger.warning(
+                    "DB checkout pre-ping failed (attempt %d/%d): %s",
+                    attempt + 1, MAX_HEALTH_RETRIES, e,
+                )
+                continue
 
             # Healthy conn — yield it. Mid-flight handling has to decide
             # discard-vs-recycle without trusting the exception class
@@ -669,6 +700,19 @@ def _dead_conn():
     return conn
 
 
+def _dead_conn_bare_database_error():
+    """Reproduces psycopg2's bare DatabaseError-with-closed=0 state when
+    PQgetResult returns NULL for an EOF socket BEFORE PQstatus flips
+    conn.closed to non-zero. Pre-fix, this leaked past the class-based
+    classifier and surfaced as a raw 500 on the caller.
+    """
+    conn = MagicMock()
+    conn.cursor.return_value.execute.side_effect = psycopg2.DatabaseError(
+        "server closed the connection unexpectedly")
+    conn.closed = 0  # critical — psycopg2 hasn't marked it dead yet
+    return conn
+
+
 def test_dead_conn_on_first_checkout_retries_and_recovers():
     dead, alive = _dead_conn(), _alive_conn()
     db = _make_db_with_mocked_pool([dead, alive])
@@ -690,6 +734,78 @@ def test_pool_full_of_corpses_raises_after_max_retries():
 
     assert isinstance(excinfo.value.__cause__, psycopg2.OperationalError)
     assert db.pool.putconn.call_count == MAX_HEALTH_RETRIES
+
+
+def test_bare_database_error_on_check_alive_retries_and_recovers():
+    """Pre-ping raising the bare `psycopg2.DatabaseError` parent (not
+    `OperationalError`) is treated as dead by the Exception-catching
+    pre-ping arm — the direct reason the combined-try was split.
+
+    Regression guard for ticket 5193642b: prod incident where a webhook
+    POST 500'd because `_is_dead_conn_error` only matched OperationalError.
+    """
+    dead, alive = _dead_conn_bare_database_error(), _alive_conn()
+    db = _make_db_with_mocked_pool([dead, alive])
+
+    with db.get_connection() as conn:
+        assert conn is alive
+
+    db.pool.putconn.assert_any_call(dead, close=True)
+
+
+def test_check_alive_generic_exception_treated_as_dead():
+    """Any exception from pre-ping — even a non-psycopg2 error — is
+    treated as dead. Locks in the Option A design: `SELECT 1` has no
+    legitimate non-dead failure mode, so the pre-ping arm doesn't
+    reach for the class-based classifier.
+    """
+    dead = MagicMock()
+    dead.cursor.return_value.execute.side_effect = RuntimeError("unexpected")
+    dead.closed = 0
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([dead, alive])
+
+    with db.get_connection() as conn:
+        assert conn is alive
+
+    db.pool.putconn.assert_any_call(dead, close=True)
+
+
+def test_pool_getconn_operational_error_retries_and_recovers():
+    """The getconn arm (separate from the pre-ping arm) retries on
+    dead-conn signals raised BY pool.getconn() itself. Locks in the
+    second code path created by the pre-ping split — the pre-fix
+    combined-try covered this case but the split introduced a new
+    arm that needs its own coverage.
+    """
+    alive = _alive_conn()
+    # First checkout raises OperationalError (dead socket surfaced by
+    # pool.getconn() itself, not by the subsequent pre-ping); second
+    # returns the alive conn. MagicMock.side_effect handles a mixed
+    # list of exception instances and return values.
+    db = _make_db_with_mocked_pool([psycopg2.OperationalError("dead"), alive])
+
+    with db.get_connection() as conn:
+        assert conn is alive
+
+
+def test_keyboard_interrupt_during_check_alive_propagates():
+    """A signal raised during pre-ping must propagate, not be swallowed.
+
+    Regression guard for the Option A split's pre-ping arm: it catches
+    `Exception`, not `BaseException`, so a SIGINT arriving during
+    `_check_alive` reaches the caller as KeyboardInterrupt instead of
+    being silently absorbed into the retry loop. Mirrors the mid-flight
+    rollback arm's signal-safety test.
+    """
+    dead = MagicMock()
+    dead.cursor.return_value.execute.side_effect = KeyboardInterrupt
+    dead.closed = 0
+    db = _make_db_with_mocked_pool([dead])
+
+    with pytest.raises(KeyboardInterrupt):
+        with db.get_connection():
+            pass
 
 
 def test_mid_flight_death_discards_conn_with_close():
