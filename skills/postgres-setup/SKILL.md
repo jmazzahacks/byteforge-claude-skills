@@ -317,12 +317,19 @@ Wraps psycopg2.pool.ThreadedConnectionPool with:
     a dead-conn error over the original exception. Unexpected failures
     inside swallow arms are logged via `logger.exception` so they don't
     vanish silently while still letting the caller's exception propagate.
-  - Signal-safe — cleanup arms catch `Exception`, not `BaseException`, so
-    `KeyboardInterrupt` / `SystemExit` raised during rollback or cursor
-    close still propagate. The cost: a conn raised-through-by-signal may
-    leak out of the pool (the bare re-raise won't run putback). Accepted
-    tradeoff — silently absorbing a SIGINT during cleanup is the worse
-    failure mode, and process exit reclaims the socket anyway.
+  - Signal-safe with no pool leak on the pre-ping arm — that arm catches
+    `BaseException`, always returns the conn to the pool (close=True),
+    then re-raises non-`Exception` (KeyboardInterrupt / SystemExit /
+    gevent Timeout). Retries only Exception subclasses. Rationale: a
+    gevent/eventlet per-request timeout derives from BaseException and
+    fires exactly where a pre-ping on a stale socket blocks, so catching
+    only `Exception` here strands one pooled slot per occurrence until
+    the pool exhausts and the worker wedges. The inner rollback arm
+    (mid-flight) still catches `Exception` for its narrower reason:
+    a signal DURING rollback must propagate immediately (not be
+    absorbed into the caller's original exception) — the tradeoff there
+    is one conn leaked on signal, which is acceptable because that path
+    almost always means process exit.
 
 If you add Prometheus or other instrumentation that increments counters
 around the checkout, put the increment INSIDE the outer try: so a signal
@@ -417,12 +424,24 @@ class Database:
             LockNotAvailable, all of which fire on perfectly healthy
             conns. Use `conn.closed` as the discriminator: psycopg2 sets
             it to non-zero only when the socket is actually broken.
+        Bare DatabaseError with `conn is None` → treat as dead. This
+            covers `psycopg2.connect()` raising the bare parent class
+            during pool refill (PQgetResult returns NULL for an EOF
+            socket before PQstatus flips) — same class of bug as the
+            pre-ping arm's. Restricted to `conn is None` because
+            DatabaseError is otherwise ambiguous (IntegrityError,
+            ProgrammingError, DataError all inherit); a refill can
+            only produce connection-setup failures, not those.
+            `psycopg2.pool.PoolError` is NOT a DatabaseError subclass,
+            so pool exhaustion still propagates.
         Anything else → not a dead-conn signal.
         """
         if isinstance(exc, psycopg2.InterfaceError):
             return True
         if isinstance(exc, psycopg2.OperationalError):
             return conn is None or getattr(conn, "closed", 0) != 0
+        if isinstance(exc, psycopg2.DatabaseError) and conn is None:
+            return True
         return False
 
     @staticmethod
@@ -446,11 +465,27 @@ class Database:
 
         Pre-pings before yielding. Checkout is a two-arm try/except:
         `pool.getconn()` uses the class-based `_is_dead_conn_error`
-        classifier (propagate on non-dead-conn errors), then `_check_alive`
-        treats ANY exception as dead — `SELECT 1` has no legitimate
-        non-dead failure mode, and psycopg2 can raise the bare
-        `DatabaseError` parent (not `OperationalError`) when it detects
-        EOF before `conn.closed` flips, which the classifier misses.
+        classifier (propagate on non-dead-conn errors like `PoolError`);
+        `_check_alive` catches `BaseException`, discards the checked-out
+        conn first, then decides retry-vs-propagate — signals still
+        propagate, the conn still goes back. `SELECT 1` has no
+        legitimate non-dead failure mode, so any Exception on that arm
+        is treated as dead regardless of psycopg2 exception class. This
+        covers psycopg2 raising the bare `DatabaseError` parent (not
+        `OperationalError`) when it detects EOF before `conn.closed`
+        flips — the classifier misses that, and pre-split it surfaced
+        as a raw 500 on the caller (ticket 5193642b).
+
+        BaseException handling on the pre-ping arm (v1.18.22): once
+        `getconn()` returns, the conn is OUT of the pool. A signal or
+        gevent/eventlet `Timeout` unwinding through `_check_alive` MUST
+        hand it back or the slot strands permanently — after `maxconn`
+        such events, the getconn arm above correctly refuses to retry
+        the resulting `PoolError` and the worker wedges. The pre-ping
+        blocks on the *exact* condition where a per-request timeout
+        would fire (stale socket), so this path is not theoretical.
+        Ticket f8e4b747 fix.
+
         On dead-conn signals, discards with close=True and retries up
         to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
         RuntimeError chained from the last underlying error.
@@ -464,21 +499,25 @@ class Database:
         """
         last_err = None
         for attempt in range(MAX_HEALTH_RETRIES):
-            conn = None
             try:
                 conn = self.pool.getconn()
             except Exception as e:
-                # Pool checkout failed. Discriminate by class — a
-                # non-dead-conn exception here (a bug in the pool
-                # itself, a non-dead OperationalError) should propagate
-                # immediately so the caller sees the real cause; a
-                # dead-conn signal counts against the retry budget.
+                # Pool checkout failed. Assignment above did not run —
+                # `conn` is provably unbound in this arm, so there is
+                # nothing to put back and no discriminator to read from
+                # a conn object. Classify by exception alone: dead-conn
+                # signals count against the retry budget; everything
+                # else propagates immediately (e.g. `PoolError` on pool
+                # exhaustion — cycling three more times cannot free a
+                # slot). `_is_dead_conn_error(None, e)` handles the
+                # bare `psycopg2.DatabaseError` raised by
+                # `psycopg2.connect()` during refill when it detects
+                # EOF before `PQstatus` flips — same class of bug as
+                # the pre-ping arm's, one layer up.
                 # `except Exception` (not `BaseException`): signals
                 # bypass this handler and propagate directly, matching
-                # the mid-flight cleanup arm's established design.
-                dead = self._is_dead_conn_error(conn, e)
-                self._safe_putback(self.pool, conn, close=True)
-                if dead:
+                # the pre-ping and mid-flight cleanup arms.
+                if self._is_dead_conn_error(None, e):
                     last_err = e
                     logger.warning(
                         "DB pool getconn failed (attempt %d/%d): %s",
@@ -489,7 +528,7 @@ class Database:
 
             try:
                 self._check_alive(conn)
-            except Exception as e:
+            except BaseException as e:
                 # Pre-ping failed. `SELECT 1` has no legitimate failure
                 # mode other than a dead socket — treat any exception
                 # as dead regardless of psycopg2 exception class. This
@@ -498,12 +537,24 @@ class Database:
                 # `conn.closed` to non-zero — the classifier can't see
                 # that as dead, and pre-split it surfaced as a raw 500
                 # on the caller (real prod incident, ticket 5193642b).
-                # `except Exception` (not `BaseException`): signals
-                # during pre-ping propagate directly. A conn leak on
-                # signal-during-cleanup is acceptable because it almost
-                # always means process exit, where the OS reclaims
-                # the socket anyway — matches the mid-flight arm.
+                #
+                # `except BaseException` (not `Exception`): by the time
+                # `_check_alive` runs, `conn` is already checked OUT of
+                # the pool. A BaseException-derived unwind through here
+                # (gevent/eventlet `Timeout`, `KeyboardInterrupt`,
+                # `SystemExit`) MUST hand the conn back or the slot is
+                # stranded permanently — one leak per occurrence, and
+                # after `maxconn` events the pool exhausts, the getconn
+                # arm above correctly refuses to retry, and the worker
+                # wedges. The gevent/eventlet `Timeout` case is
+                # correlated with this codepath: a per-request timeout
+                # fires exactly where a pre-ping on a stale socket
+                # blocks, not independently. Discard first, then decide
+                # retry-vs-propagate — signals still propagate, the
+                # conn still goes back. Ticket f8e4b747 fix (v1.18.22).
                 self._safe_putback(self.pool, conn, close=True)
+                if not isinstance(e, Exception):
+                    raise
                 last_err = e
                 logger.warning(
                     "DB checkout pre-ping failed (attempt %d/%d): %s",
@@ -666,6 +717,18 @@ with db.get_cursor() as cursor:
 
 Drop into `tests/test_database.py`. These cover the three critical paths without needing a running database:
 
+> **Verify each new regression test against the UNPATCHED code first.**
+> Before adding a test alongside a fix, revert the fix locally and run
+> the test — it MUST fail. A test written *from* the fix, *after* the
+> fix, tends to restate the implementation instead of pinning the
+> behavior, and ends up certifying whatever shape the code happens to
+> have. The v1.18.21 KI test (`..._propagates`) asserted only that the
+> signal escaped; that passed against the leaky shape AND the correct
+> shape, so it signed off on a defect that took a downstream agent to
+> catch (ticket f8e4b747). The v1.18.22 replacement
+> (`..._without_leaking_conn`) fails against the leaky shape — that is
+> what makes it a regression guard rather than a description.
+
 ```python
 import psycopg2
 import pytest
@@ -789,14 +852,54 @@ def test_pool_getconn_operational_error_retries_and_recovers():
         assert conn is alive
 
 
-def test_keyboard_interrupt_during_check_alive_propagates():
-    """A signal raised during pre-ping must propagate, not be swallowed.
+def test_pool_getconn_bare_database_error_retries_and_recovers():
+    """`psycopg2.connect()` inside `pool.getconn()`'s refill path can raise
+    the bare `psycopg2.DatabaseError` parent instead of `OperationalError`
+    (same PQgetResult-vs-PQstatus timing bug as the pre-ping arm, one
+    layer up). The classifier's `conn is None` DatabaseError case treats
+    this as dead so the retry loop drains the corpse just like an
+    OperationalError refill failure. Regression guard for v1.18.22.
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool(
+        [psycopg2.DatabaseError("server closed the connection unexpectedly"), alive]
+    )
 
-    Regression guard for the Option A split's pre-ping arm: it catches
-    `Exception`, not `BaseException`, so a SIGINT arriving during
-    `_check_alive` reaches the caller as KeyboardInterrupt instead of
-    being silently absorbed into the retry loop. Mirrors the mid-flight
-    rollback arm's signal-safety test.
+    with db.get_connection() as conn:
+        assert conn is alive
+
+
+def test_pool_getconn_non_dead_error_propagates():
+    """A non-dead-conn error from `pool.getconn()` — canonically `PoolError`
+    on pool exhaustion — must NOT be swallowed by the retry loop.
+    `PoolError` isn't a `DatabaseError` subclass so `_is_dead_conn_error`
+    returns False; cycling three more times cannot free a slot, and
+    burying it under the RuntimeError points on-call at Postgres
+    instead of at request-volume. Pins the whole reason the getconn
+    arm still classifies at all.
+    """
+    from psycopg2.pool import PoolError
+    db = _make_db_with_mocked_pool([PoolError("connection pool exhausted")])
+
+    with pytest.raises(PoolError):
+        with db.get_connection():
+            pass
+
+
+def test_keyboard_interrupt_during_check_alive_propagates_without_leaking_conn():
+    """A signal raised during pre-ping must propagate AND hand the
+    checked-out conn back to the pool.
+
+    Regression guard for ticket f8e4b747 (v1.18.22): the v1.18.21 shape
+    caught `Exception` on this arm, which let any `BaseException`
+    (KeyboardInterrupt, SystemExit, gevent/eventlet `Timeout`) escape
+    without running `_safe_putback`. One pool slot stranded per
+    occurrence; after `maxconn` events the pool exhausts and the
+    getconn arm above correctly refuses to retry, wedging the worker.
+    A propagation-only assertion (the v1.18.21 test) passes with AND
+    without the leak — asserting `putconn(conn, close=True)` is what
+    turns this into an actual regression guard rather than a
+    defect-certifier.
     """
     dead = MagicMock()
     dead.cursor.return_value.execute.side_effect = KeyboardInterrupt
@@ -806,6 +909,9 @@ def test_keyboard_interrupt_during_check_alive_propagates():
     with pytest.raises(KeyboardInterrupt):
         with db.get_connection():
             pass
+
+    # NOT merely "propagates" — the slot must go back, discarded.
+    db.pool.putconn.assert_called_once_with(dead, close=True)
 
 
 def test_mid_flight_death_discards_conn_with_close():
