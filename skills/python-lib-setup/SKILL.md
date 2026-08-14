@@ -91,6 +91,11 @@ classifiers = [
     "{license_classifier}",
     "Operating System :: OS Independent",
 ]
+# CRITICAL — private git deps MUST use TOKEN-FREE URLs here. Never embed
+# {env:CR_PAT} in this list: hatchling expands it at wheel build time and
+# bakes the live PAT into the wheel's .dist-info/METADATA Requires-Dist,
+# leaking a valid credential into every published image. Auth belongs at
+# install time (see the Installation section below + uv-supply-chain-hardening).
 dependencies = [
   {dependencies_list}
 ]
@@ -527,11 +532,30 @@ pip install git+https://${CR_PAT}@github.com/{github_username}/{project-name}.gi
 ### As a dependency in pyproject.toml
 ```toml
 dependencies = [
-    "{project-name} @ git+https://{env:CR_PAT}@github.com/{github_username}/{project-name}.git",
+    # TOKEN-FREE URL — never embed {env:CR_PAT} here. hatchling expands it at
+    # wheel build time and bakes the live PAT into .dist-info/METADATA
+    # Requires-Dist, leaking a credential into every published image.
+    # Auth is supplied at install time (see below).
+    "{project-name} @ git+https://github.com/{github_username}/{project-name}.git",
 ]
 ```
 
+Auth for private repos declared this way is supplied at INSTALL time — either
+by a `${CR_PAT}` line in the consuming app's `requirements.txt` (safe there;
+requirements files are never packaged), or by git `url.insteadOf` config:
+
+```bash
+export GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0="url.https://${CR_PAT}@github.com/.insteadOf" \
+  GIT_CONFIG_VALUE_0="https://github.com/"
+```
+
+The `uv-supply-chain-hardening` skill wires this end-to-end for a Docker build.
+
 ### As a dependency in requirements.txt
+
+Token inline is safe here — requirements files are never packaged into wheels:
+
 ```
 {project-name} @ git+https://${CR_PAT}@github.com/{github_username}/{project-name}.git
 ```
@@ -566,6 +590,20 @@ source bin/activate  # On Windows: bin\Scripts\activate
 pip install -r dev-requirements.txt
 pip install -e .
 ```
+
+> **Private git deps: install-time auth.** If `pyproject.toml` declares any
+> private git dep via a token-free URL (per the pattern above), `pip install -e .`
+> will fail auth on a fresh clone with no credentials in scope. Export the git
+> `insteadOf` config in the shell first so pip's `git clone` picks up your PAT:
+>
+> ```bash
+> export GIT_CONFIG_COUNT=1 \
+>   GIT_CONFIG_KEY_0="url.https://${CR_PAT}@github.com/.insteadOf" \
+>   GIT_CONFIG_VALUE_0="https://github.com/"
+> ```
+>
+> Add this to `~/.zshrc` / `~/.bashrc` alongside `export CR_PAT=...` so every
+> shell has it. Persist it globally with `git config --global` if you prefer.
 
 ## License
 
@@ -649,16 +687,23 @@ Inform the user of the next steps.
 4. **Update version** in `pyproject.toml` before each release
 
 5. **Referencing this library from other projects**:
-   - In `pyproject.toml`:
+   - In `pyproject.toml` — **always TOKEN-FREE, public or private**. `{env:CR_PAT}`
+     inside a `pyproject.toml` gets baked into the wheel's `Requires-Dist` metadata
+     at build time (hatchling expansion), leaking a live PAT into every image built
+     from that consuming package. Auth is supplied at install time:
      ```toml
      dependencies = [
-         "{project-name} @ git+https://{env:CR_PAT}@github.com/{github_username}/{project-name}.git",
+         "{project-name} @ git+https://github.com/{github_username}/{project-name}.git",
      ]
      ```
-   - In `requirements.txt`:
+   - In `requirements.txt` — inline token is safe (requirements files are never
+     packaged):
      ```
      {project-name} @ git+https://${CR_PAT}@github.com/{github_username}/{project-name}.git
      ```
+   - For a Docker build that installs a `pyproject.toml` with a private git dep,
+     run the `uv-supply-chain-hardening` skill — it wires install-time auth via a
+     BuildKit secret + git `insteadOf`, so the token never enters any committed file.
 
 ## Design Principles
 

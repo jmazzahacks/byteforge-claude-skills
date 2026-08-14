@@ -374,9 +374,10 @@ class Database:
         db_name: str,
         db_user: str,
         db_passwd: str,
-        db_port: int = 5432,
         min_conn: int = 2,
         max_conn: int = 10,
+        *,
+        db_port: int = 5432,
     ) -> None:
         # `db_port` MUST match what setup_database.py provisioned against —
         # both read `{PROJECT_NAME}_DB_PORT`. Anywhere Postgres isn't on 5432
@@ -384,6 +385,13 @@ class Database:
         # silently dials 5432 via libpq's default and either fails outright
         # or — worse — talks to a *different* Postgres that happens to
         # listen there. Ticket 881aa10a fix (v1.18.23).
+        #
+        # Placement note: `db_port` sits AFTER `max_conn` and is guarded by
+        # `*,` so it is keyword-only. If it were inserted between `db_passwd`
+        # and `min_conn`, any existing caller using `Database(h, n, u, p, 5, 20)`
+        # (positional min_conn/max_conn from a pre-v1.18.23 scaffold) would
+        # silently rebind db_port=5 and dial TCP port 5. Keyword-only forces
+        # the intent explicit and preserves every prior positional call site.
         self.pool = ThreadedConnectionPool(
             min_conn,
             max_conn,

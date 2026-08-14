@@ -121,13 +121,20 @@ cd {project}-core
 # Invoke python-lib-setup skill
 ```
 
-Add `{project}-models` as a GitHub dependency in `pyproject.toml`:
+Add `{project}-models` as a GitHub dependency in `pyproject.toml` — **TOKEN-FREE
+URL regardless of public/private.** Never embed `{env:CR_PAT}` (or any auth) in
+`pyproject.toml`: hatchling expands it at wheel build time and bakes the live
+PAT into the wheel's `.dist-info/METADATA` `Requires-Dist`, so every published
+image carries a valid credential invisible to `docker inspect`. Auth for
+private repos is supplied at INSTALL time (a `${CR_PAT}` line in the consuming
+app's `requirements.txt`, or git `url.insteadOf` config — see the
+`uv-supply-chain-hardening` skill for the full pattern).
+
 ```toml
 dependencies = [
-    # Public repo:
+    # Public OR private — always token-free here. Install-time auth handles
+    # private access; see uv-supply-chain-hardening Step 1 for the callout.
     "{project}-models @ git+https://github.com/{github_org}/{project}-models.git",
-    # Private repo (requires CR_PAT environment variable):
-    # "{project}-models @ git+https://{env:CR_PAT}@github.com/{github_org}/{project}-models.git",
 ]
 ```
 
@@ -138,6 +145,7 @@ Set up in this order:
 2. **`postgres-setup`** — Database schema and setup script. **Run its Step 7** to scaffold the resilient `Database` driver at `src/{project_name}/database.py` — required for the Flask process to survive Postgres restarts; skipping it leads to a wedged pool on the next upstream PG restart.
 3. **`flask-docker-deployment`** — Dockerfile, build script, versioning
 4. **`byteforge-loki-logging`** — Structured logging to Grafana Loki
+5. **`uv-supply-chain-hardening`** — Lock the dependency install: pin every third-party dep with hashes, gate on release age, pin the uv binary by digest, and route the private-dep token through a build-time secret so it never enters `pyproject.toml` or the running image. **Run this AFTER 1–4** — it hardens what's already there rather than emitting new app code. Not optional: every scaffold that skipped this ended up in a downstream ticket for a leaked `CR_PAT` in the wheel `Requires-Dist` metadata.
 
 Add model and core libraries as GitHub dependencies in `requirements.txt`:
 ```
@@ -216,7 +224,10 @@ source bin/activate && python {project_name}.py
 - **Type hints** — All function parameters and return types must have type annotations
 - **No lambdas** — Use named functions or loops instead
 - **Virtual environments** — Always `source bin/activate` before running Python
-- **No local path dependencies** — NEVER use `pip install -e ../sibling-project` or `file:` references. Cross-repo dependencies MUST use GitHub URLs. Public repos: `git+https://github.com/{github_org}/pkg.git`. Private repos: add `CR_PAT` token — in `pyproject.toml`: `git+https://{env:CR_PAT}@github.com/...`, in `requirements.txt`: `git+https://${CR_PAT}@github.com/...`
+- **No local path dependencies** — NEVER use `pip install -e ../sibling-project` or `file:` references. Cross-repo dependencies MUST use GitHub URLs.
+  - **`pyproject.toml` — always TOKEN-FREE**, public OR private: `git+https://github.com/{github_org}/pkg.git`. Never embed `{env:CR_PAT}` here — hatchling expands it at wheel build time and bakes the live PAT into `Requires-Dist` metadata, leaking a credential into every published image.
+  - **`requirements.txt` — token inline is safe** (requirements files are never packaged): `git+https://${CR_PAT}@github.com/{github_org}/pkg.git`.
+  - Auth for private deps declared in a `pyproject.toml` is supplied at INSTALL time — via a `${CR_PAT}` line in the consuming app's `requirements.txt`, or git `url.insteadOf` config. The `uv-supply-chain-hardening` skill wires this end-to-end for the backend.
 ```
 
 **IMPORTANT**: When generating the actual CLAUDE.md file:
@@ -281,7 +292,7 @@ After creating all files, tell the user:
 2. **Run skills in order** for each sub-project:
    - `cd {project}-models/` → run `python-lib-setup`
    - `cd {project}-core/` → run `python-lib-setup`
-   - `cd {project}-backend/` → run `flask-smorest-api`, then `postgres-setup`, then `flask-docker-deployment`, then `byteforge-loki-logging`
+   - `cd {project}-backend/` → run `flask-smorest-api`, then `postgres-setup`, then `flask-docker-deployment`, then `byteforge-loki-logging`, then **`uv-supply-chain-hardening`** (locks + hashes the dep install, gates release-age, and routes the private-dep token as a build secret so it never lands in `pyproject.toml` or the image — the default for new Python projects)
    - (If frontend selected) `cd {project}-frontend/` → run `aegis-nextjs-frontend`
    - (If Python API client selected) `cd {project}-api-python/` → run `python-lib-setup`
 3. **Create GitHub repos** for each sub-project under `{github_org}/`
