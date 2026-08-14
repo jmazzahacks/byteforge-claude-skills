@@ -397,8 +397,13 @@ class ServiceManager:
             # resilient implementation (pre-ping + retry; survives PG restart).
             from src.{project_name}.database import Database
 
-            # Get connection parameters from environment
+            # Get connection parameters from environment. `{PROJECT_NAME}_DB_PORT`
+            # MUST be read here — the setup script (postgres-setup Step 4)
+            # provisions against it, and skipping it here silently dials 5432
+            # (Docker-mapped 5433 or multi-instance hosts hit this). Ticket
+            # 881aa10a fix — five env vars, four surfaces, one invariant.
             db_host = os.environ.get('{PROJECT_NAME}_DB_HOST', 'localhost')
+            db_port = int(os.environ.get('{PROJECT_NAME}_DB_PORT', '5432'))
             db_name = os.environ.get('{PROJECT_NAME}_DB_NAME', '{project_name}')
             db_user = os.environ.get('{PROJECT_NAME}_DB_USER', '{project_name}')
             db_passwd = os.environ.get('{PROJECT_NAME}_DB_PASSWORD')
@@ -406,7 +411,7 @@ class ServiceManager:
             if not db_passwd:
                 raise ValueError("{PROJECT_NAME}_DB_PASSWORD environment variable required")
 
-            self._db = Database(db_host, db_name, db_user, db_passwd)
+            self._db = Database(db_host, db_name, db_user, db_passwd, db_port=db_port)
             logger.info("Database connection initialized")
 
         return self._db
@@ -433,6 +438,7 @@ DEBUG=False
 
 # Database Configuration (if applicable)
 {PROJECT_NAME}_DB_HOST=localhost
+{PROJECT_NAME}_DB_PORT=5432
 {PROJECT_NAME}_DB_NAME={project_name}
 {PROJECT_NAME}_DB_USER={project_name}
 {PROJECT_NAME}_DB_PASSWORD=your_password_here

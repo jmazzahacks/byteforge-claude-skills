@@ -374,13 +374,21 @@ class Database:
         db_name: str,
         db_user: str,
         db_passwd: str,
+        db_port: int = 5432,
         min_conn: int = 2,
         max_conn: int = 10,
     ) -> None:
+        # `db_port` MUST match what setup_database.py provisioned against —
+        # both read `{PROJECT_NAME}_DB_PORT`. Anywhere Postgres isn't on 5432
+        # (Docker-mapped 5433, multi-instance hosts), a missing `port=` here
+        # silently dials 5432 via libpq's default and either fails outright
+        # or — worse — talks to a *different* Postgres that happens to
+        # listen there. Ticket 881aa10a fix (v1.18.23).
         self.pool = ThreadedConnectionPool(
             min_conn,
             max_conn,
             host=db_host,
+            port=db_port,
             database=db_name,
             user=db_user,
             password=db_passwd,
@@ -696,6 +704,7 @@ db = Database(
     db_name=os.environ["{PROJECT_NAME}_DB_NAME"],
     db_user=os.environ["{PROJECT_NAME}_DB_USER"],
     db_passwd=os.environ["{PROJECT_NAME}_DB_PASSWORD"],
+    db_port=int(os.environ.get("{PROJECT_NAME}_DB_PORT", "5432")),
 )
 
 # Read with RealDictCursor (default)
