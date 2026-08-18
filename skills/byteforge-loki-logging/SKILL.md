@@ -355,6 +355,109 @@ process.start()
 | Gunicorn worker | Inside `create_app()` | Runs post-fork in worker process |
 | `multiprocessing.Process` child | Top of target function | QueueListener thread + SSL context don't survive fork |
 | Direct `os.fork()` child | Immediately after fork in child branch | Same reason |
+| Celery MainProcess (master + beat) | `@setup_logging.connect` receiver | Also suppresses celery's default log config so MainProcess events reach root |
+| Celery prefork pool child | `@worker_process_init.connect` receiver | Fork issue as above; **also raise `worker_proc_alive_timeout`** — see Celery section |
+
+### Celery Workers
+
+Celery is a fork-based worker pool, so the general multiprocessing rule applies — each prefork child needs its own `configure_logging()` after fork. Two Celery-specific traps make the naive "just call configure_logging in a signal receiver" recipe silently or catastrophically wrong; both must be handled together.
+
+**Trap 1 — the signal-swallow blackout.** Celery's `Signal.send` wraps each receiver in `try/except Exception` and swallows the error, and `setup_logging_subsystem` still counts a *failed* `setup_logging` receiver as "logging was configured." So a Loki misconfig (`DEBUG_LOCAL=false` with any of the four `LOKI_*` vars missing → `RuntimeError` from `_validate_loki_env_vars`) leaves the worker running with **zero root handlers attached**. Tasks keep acking, nothing reaches Loki, and the container's health checks stay green — a silent blackout on the write path. Fix: raise `SystemExit(1)` from the receiver. `SystemExit` is a `BaseException`, not an `Exception`, so it escapes the swallow and kills the process loudly — the same fail-fast behavior your Flask container gets from `create_app()`.
+
+**Trap 2 — the fork-window timeout race.** `worker_process_init` receivers run inside billiard's child-startup window. Celery SIGKILLs any child not fully up within `worker_proc_alive_timeout` (default **4.0 seconds**). But `configure_logging()`'s synchronous `/ready` probe against Loki is 3s connect + 3s read, and DNS resolution is unbounded by either — so when Loki degrades, every prefork child blows the 4s window and gets SIGKILL'd, and the pool enters a kill/respawn loop *precisely during the outage you need logs from*. Fix: raise `worker_proc_alive_timeout` in the Celery config (30.0s in the reference implementation) whenever a `worker_process_init` receiver calls `configure_logging()`.
+
+**Fix**: complete Celery app wired for both traps:
+
+```python
+"""Celery application with Loki-routed logging."""
+
+import logging
+import os
+import sys
+from celery import Celery
+from celery.signals import setup_logging, worker_process_init
+from byteforge_loki_logging import configure_logging
+
+redis_url = os.environ.get('MY_APP_REDIS_URL', 'redis://localhost:6379/0')
+
+celery = Celery('my_app', broker=redis_url, include=['tasks'])
+
+celery.conf.update(
+    task_serializer='json',
+    accept_content=['json'],
+    # The worker_process_init hook below runs configure_logging() in each
+    # prefork child, which probes the Loki endpoint synchronously (3s
+    # connect + 3s read, and a hung DNS resolver isn't bounded by either).
+    # Celery SIGKILLs any child that isn't up within this timeout
+    # (default 4.0s) — leaving the default puts every child spawn in a
+    # kill/respawn loop exactly when Loki is degraded.
+    worker_proc_alive_timeout=30.0,
+    # ... your other celery config (task_acks_late, beat_schedule, etc.) ...
+)
+
+
+def _configure_loki_logging() -> None:
+    debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+    log_level = os.environ.get('LOG_LEVEL', 'INFO')
+    configure_logging(
+        application_tag='my-app',
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
+
+    # Celery's loggers attach their own StreamHandlers with propagate=False,
+    # bypassing the root logger's Loki handler. Clear and propagate; do NOT
+    # setLevel() on any of them — see the Flask + Gunicorn section for why
+    # pinning a child logger's level breaks LOG_LEVEL inheritance.
+    # `celery.redirected` matters if celery's --without-mingle / worker CLI
+    # enabled redirect_stdouts (which reroutes print()/sys.stdout writes
+    # through logging); `celery.pool` carries billiard pool lifecycle.
+    for name in ('celery', 'celery.worker', 'celery.task',
+                 'celery.app.trace', 'celery.beat', 'celery.redirected',
+                 'celery.pool'):
+        dep_logger = logging.getLogger(name)
+        dep_logger.handlers.clear()
+        dep_logger.propagate = True
+
+
+def _configure_or_die() -> None:
+    # celery's Signal.send catches and swallows Exception from receivers —
+    # AND still counts a failed receiver as "logging was configured", so a
+    # misconfig (e.g. DEBUG_LOCAL=false with a LOKI_* var missing, which
+    # raises RuntimeError) would leave the worker running with ZERO root
+    # handlers: a silent logging blackout on the write path. SystemExit is
+    # a BaseException, so it escapes the swallow and kills the process
+    # loudly — the same crash-on-misconfig behavior the Flask container
+    # gets from create_app().
+    try:
+        _configure_loki_logging()
+    except Exception as exc:
+        print(f"FATAL: logging configuration failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+@setup_logging.connect
+def _on_setup_logging(**kwargs) -> None:
+    # Connecting to setup_logging fully suppresses celery's default
+    # logging config (including worker_hijack_root_logger), so
+    # MainProcess events (broker connect, "ready", beat schedule ticks)
+    # reach our Loki handler instead of celery's stdout-only StreamHandler.
+    _configure_or_die()
+
+
+@worker_process_init.connect
+def _on_worker_process_init(**kwargs) -> None:
+    # Each prefork pool child needs its own configure_logging(): the
+    # parent's QueueListener thread and requests.Session SSL context do
+    # not survive fork(). Without this, child logs go to a dead queue.
+    _configure_or_die()
+```
+
+**Verification checklist:**
+
+- Start the worker with a missing `LOKI_*` env var. Expect `FATAL: logging configuration failed: ...` on stderr followed by process exit, NOT a running worker that swallows tasks silently. If the worker starts, `_configure_or_die` isn't wired or `setup_logging`/`worker_process_init` isn't connected. (No broker needed — `setup_logging` fires from `on_init_blueprint` before any broker connection attempt.)
+- With Loki up and `LOG_LEVEL=INFO`, run a task that calls `logger.debug(...)` from a `logging.getLogger(__name__)` at module scope. It should NOT appear in Loki. If it does, one of the `celery.*` loggers in the propagation loop has been `setLevel()`'d somewhere.
+- Simulate Loki degradation by pointing `LOKI_ENDPOINT` at a black-hole endpoint (e.g. `https://198.51.100.1/loki/api/v1/push`). Workers should still start within 30s (not 4s), then log fallback warnings and continue serving tasks. If workers kill/respawn-loop, `worker_proc_alive_timeout` isn't set high enough.
 
 ### MCP Server (FastMCP / uvicorn)
 
@@ -628,6 +731,16 @@ If your MCP server runs only over stdio (e.g. for local use with Claude Code, no
 - The parent's QueueListener thread and requests.Session do not survive `fork()`. The child inherits a dead handler — logs go into a queue that nobody reads. No errors are raised.
 - Fix: call `configure_logging()` at the top of the child process target function, before any logging (see Multiprocessing section above)
 - Symptoms: parent process logs appear in Loki, but all child process logs vanish silently
+
+**Celery worker running but no task logs in Loki, container is green:**
+- The `setup_logging` / `worker_process_init` receiver raised an exception during `configure_logging()` (typically a `RuntimeError` from `_validate_loki_env_vars` when a `LOKI_*` env var is missing under `DEBUG_LOCAL=false`). Celery's `Signal.send` swallowed the exception AND counted the failed receiver as "logging was configured", so the worker ran on with zero root handlers. Tasks keep acking; nothing writes to Loki.
+- Fix: wrap the receiver body in `try/except Exception → raise SystemExit(1)`. `SystemExit` is a `BaseException`, so it escapes celery's swallow and kills the worker loudly on misconfig. See the Celery Workers section for the full pattern.
+- Symptoms: `celery worker` is running, health checks pass, tasks return `SUCCESS`, but `application=<your-tag>` is completely absent from Loki. Stderr may show the `RuntimeError` traceback exactly once (from the swallow's default logger before it dies) but no further errors.
+
+**Celery workers kill/respawn-looping during a Loki outage:**
+- `configure_logging()`'s synchronous `/ready` probe (3s connect + 3s read + unbounded DNS) is called from `worker_process_init`, which runs inside billiard's child-startup window. Celery SIGKILLs any child not up within `worker_proc_alive_timeout` (default 4.0s). When Loki is slow or DNS-degraded, every prefork child blows the window and gets killed before it can log a fallback warning.
+- Fix: set `worker_proc_alive_timeout=30.0` (or higher) in the Celery config alongside the `worker_process_init` receiver. See the Celery Workers section.
+- Symptoms: `docker logs <worker>` shows a stream of `celery.worker.consumer.MainProcess ... Process 'ForkPoolWorker-N' pid:X exited with 'signal 9 (SIGKILL)'` messages during a broader Loki incident, and the worker never gets to the "ready" state.
 
 **MCP server logs / uvicorn access logs not appearing in Loki:**
 - `mcp.run(transport="streamable-http")` internally calls `uvicorn.Config(...)` without a `log_config` kwarg, so uvicorn falls back to its default config that attaches StreamHandlers to `uvicorn`, `uvicorn.access`, and `uvicorn.error` with `propagate=False`. Those records bypass root and never reach the byteforge-loki-logging handler.
