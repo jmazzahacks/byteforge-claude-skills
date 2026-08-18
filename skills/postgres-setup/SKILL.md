@@ -265,7 +265,7 @@ chmod +x dev_scripts/setup_database.py
 
 ## Step 7: Create Resilient Database Driver (Recommended for any long-running Python process)
 
-For any project with a long-running Python process (Flask app, background worker, daemon), create a database driver that **survives upstream Postgres restarts**. The naïve pattern — `ThreadedConnectionPool.getconn()` straight into a query — wedges the entire process the moment Postgres goes away, because the pool happily hands out dead sockets and `getconn()` does zero health checking. Every request returns `OperationalError: server closed the connection unexpectedly` until the process is restarted.
+For any project with a long-running Python process (Flask app, background worker, daemon), create a database driver that **survives upstream Postgres restarts** — meaning the pool self-heals across subsequent requests, not that a single request blocks through the outage. Requests in flight during the downtime still fail fast (bounded retries with no backoff, by design — see the `MAX_HEALTH_RETRIES` rationale). The naïve pattern — `ThreadedConnectionPool.getconn()` straight into a query — wedges the entire process the moment Postgres goes away, because the pool happily hands out dead sockets and `getconn()` does zero health checking. Every request returns `OperationalError: server closed the connection unexpectedly` until the process is restarted.
 
 The pattern below is production-tested: in one incident, an upstream Postgres restart left a naïve pool holding corpses for ~50 minutes until a manual deploy shipped a fix. With this pattern in place, the same situation self-heals in a handful of requests.
 
