@@ -126,11 +126,17 @@ Add to README.md or .env.example:
 - `LOG_LEVEL` - Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   - Default: 'INFO'
 
-**Loki Configuration (Production Only - required when DEBUG_LOCAL=false):**
+**Loki Configuration (Production Only):**
+
+**ALL FOUR variables below are hard-required when `DEBUG_LOCAL=false`**, regardless of whether your Loki endpoint uses a private or public CA. `_validate_loki_env_vars()` raises `RuntimeError` if any is unset or empty. Under gunicorn this crash-loops the worker visibly at boot; under celery the failure is silent unless you wired the `_configure_or_die` pattern from the Celery Workers section (see the "Celery worker running but no task logs in Loki, container is green" troubleshooting entry).
+
 - `LOKI_ENDPOINT` - Loki push API URL (e.g., https://loki.example.com/loki/api/v1/push)
 - `LOKI_USER` - Loki username for HTTP Basic Auth
 - `LOKI_PASSWORD` - Loki password for HTTP Basic Auth
-- `LOKI_CA_BUNDLE_PATH` - Path to CA certificate (e.g., /app/certs/loki-ca.pem), or "false" to disable SSL verification
+- `LOKI_CA_BUNDLE_PATH` - How the client validates Loki's TLS certificate. Required (non-empty) whenever the other three are set. Three valid shapes:
+  - **Private CA** (Loki behind an internal PKI): path to a `.pem` file containing your CA cert, e.g. `/app/certs/loki-ca.pem`. Mount it into the container via docker-compose (see Step 4).
+  - **Public CA** (Grafana Cloud, any Loki fronted by a widely-trusted issuer): path to the system CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu images, `/etc/pki/tls/certs/ca-bundle.crt` on RHEL/Alpine. This is the safe choice — TLS is still verified against the system trust store.
+  - **`"false"` (literal string) — disables SSL verification entirely.** This is an escape hatch for dev/test/internal-network Loki where you accept the MITM risk. Do NOT reach for it as a shortcut for public-CA endpoints; the system-bundle path above is what you want there.
 
 ### Logging Behavior
 
@@ -703,9 +709,10 @@ If your MCP server runs only over stdio (e.g. for local use with Claude Code, no
 - Check that the source file exists on the host at the mounted path
 
 **Runtime error: Missing required environment variables:**
-- Only occurs when `DEBUG_LOCAL=false`
-- Ensure all LOKI_* variables are set
-- Check spelling (LOKI_, not MZ_LOKI_ or MATERIA_LOKI_)
+- Only occurs when `DEBUG_LOCAL=false`. `_validate_loki_env_vars()` hard-requires ALL FOUR `LOKI_*` vars (endpoint, user, password, ca_bundle_path) to be non-empty — regardless of whether the endpoint uses a private or public CA.
+- Fix: set every one. For `LOKI_CA_BUNDLE_PATH` on a public-CA endpoint (Grafana Cloud etc.), point at the system trust store, e.g. `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu — NOT the string `"false"` unless you accept disabling TLS verification. See Step 5's `LOKI_CA_BUNDLE_PATH` block.
+- Check spelling (LOKI_, not MZ_LOKI_ or MATERIA_LOKI_).
+- Where you see it depends on the container: under gunicorn the RuntimeError crashes the worker at boot and gunicorn respawn-loops (visible in `docker logs`). Under celery WITHOUT the `_configure_or_die` wrapper from the Celery Workers section, celery's signal machinery swallows the exception AND the worker keeps running with zero root handlers — silent blackout. See "Celery worker running but no task logs in Loki, container is green" below.
 
 **Flask route exceptions not appearing in Loki:**
 - Flask catches exceptions in route handlers and logs them via werkzeug to stdout/stderr, bypassing the root logger
