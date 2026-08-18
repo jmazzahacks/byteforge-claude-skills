@@ -129,7 +129,7 @@ Project-scoped naming across setup and runtime: `{PROJECT_NAME}_DB_HOST`, `{PROJ
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-v8ce95515)
+## HiveMake operational playbook (hm-playbook-vb933fec6)
 
 # Common — every HiveMake agent reads this
 
@@ -281,10 +281,12 @@ These skills are for agents whose work is *authoring* — writing code, filing t
 **When:** Before starting any non-trivial task — a migration, a bug triage, a "why does this work this way?" question, filing a ticket against another team. If you think you already know the answer from session context or CLAUDE.md — you still call them.
 
 **How:**
-1. `recall_knowledge` first — "have we done anything like this before?" The answer is a hint, not a citation. Skim it, don't quote it.
-2. `find_similar_tickets` for ranked prior tickets that back or contradict the recall answer. Look at the top 3–5.
-3. `get_ticket` on the top 1–2 to read the actual negotiation + resolve message. That's your source of truth.
+1. `recall_knowledge("<the problem, as a question>")` — a hint, not a citation. Skim it, don't quote it.
+2. `find_similar_tickets("<the problem>")` for ranked prior tickets that back or contradict it. Look at the top 3–5.
+3. `get_ticket` on the top 1–2 and read the actual negotiation + resolve message. **That is your evidence.**
 4. Only then act.
+
+Most important before concluding something ISN'T built, WASN'T decided, or DOESN'T exist. Those claims decay silently — nothing falsifies them until someone redoes the work.
 
 **Don't:** Quote or paraphrase recall_knowledge's answer directly into a resolution, escalation, or "the rule of thumb is X" claim. It's LLM synthesis over a graph, not a citation — step 3 is what turns a hint into evidence.
 
