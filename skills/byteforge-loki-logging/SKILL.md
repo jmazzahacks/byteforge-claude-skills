@@ -213,13 +213,17 @@ If using **flask-smorest-api** skill, add logging **before** creating Flask app:
 
 ```python
 import os
-import logging
 from flask import Flask
 from byteforge_loki_logging import configure_logging
 
 # Configure logging FIRST
 debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
-configure_logging(application_tag='my-api', debug_local=debug_mode)
+log_level = os.environ.get('LOG_LEVEL', 'INFO')
+configure_logging(
+    application_tag='my-api',
+    debug_local=debug_mode,
+    local_level=log_level,
+)
 
 # Then create Flask app
 app = Flask(__name__)
@@ -228,9 +232,15 @@ app = Flask(__name__)
 # exceptions in route handlers reach Loki. Without this, Flask catches
 # exceptions internally and logs them via werkzeug to stdout/stderr,
 # bypassing the root logger that configure_logging() set up.
+#
+# DO NOT set app.logger's level here. Leaving it at NOTSET lets
+# isEnabledFor()'s ancestor walk reach root and inherit LOG_LEVEL.
+# Pinning to DEBUG would stop the walk at app.logger, so the level
+# check passes, the record propagates to root (whose handler is
+# NOTSET), and DEBUG lines reach Loki regardless of LOG_LEVEL.
+# See the Troubleshooting entry for the full trace.
 app.logger.handlers.clear()
 app.logger.propagate = True
-app.logger.setLevel(logging.DEBUG)
 
 # ... rest of setup
 ```
@@ -269,9 +279,16 @@ def create_app() -> Flask:
     # Force Flask, werkzeug, and gunicorn loggers to propagate to root.
     # These loggers create their own StreamHandlers with propagate=False,
     # which bypasses the root logger's Loki handler.
+    #
+    # Do NOT setLevel() on ANY of these — not app.logger, not the deps.
+    # Leaving them at NOTSET lets isEnabledFor()'s ancestor walk reach
+    # root and inherit LOG_LEVEL. Pinning one to DEBUG stops the walk
+    # there; the record propagates to root (whose handler is NOTSET)
+    # and DEBUG lines reach Loki regardless of LOG_LEVEL. Same rule
+    # applies to any propagate-to-root wiring elsewhere. See the
+    # Troubleshooting entry for the full trace.
     app.logger.handlers.clear()
     app.logger.propagate = True
-    app.logger.setLevel(logging.DEBUG)
 
     for name in ('werkzeug', 'gunicorn', 'gunicorn.error', 'gunicorn.access'):
         dep_logger = logging.getLogger(name)
@@ -592,6 +609,11 @@ If your MCP server runs only over stdio (e.g. for local use with Claude Code, no
 - Fix: clear Flask's default handlers and propagate to root logger (see Flask integration section above)
 - Symptoms: 500 errors appear in nginx/container logs but not in Grafana/Loki
 
+**`app.logger.debug(...)` shipping to Loki even when `LOG_LEVEL=INFO`:**
+- An `app.logger.setLevel(logging.DEBUG)` call somewhere in `create_app()` pinned Flask's own logger below root's effective level. CPython's `logging` filters at two points: (a) at origination, `isEnabledFor(level)` walks the ancestor chain via `getEffectiveLevel()` and returns the first non-NOTSET level it finds; (b) during propagation, each ancestor's *handlers* are called, but the ancestors' own levels are NOT re-checked. So if `app.logger` is NOTSET, the walk-up reaches root, finds `LOG_LEVEL` (say INFO), and DEBUG is suppressed at origination. But if `app.logger` is pinned to DEBUG, the walk-up stops there and never reaches root — the record is created, propagates to root's handler (which is itself NOTSET), and reaches Loki. Ordinary module loggers (`logging.getLogger(__name__)` in blueprints) are unaffected because they remain NOTSET and correctly inherit `LOG_LEVEL` via the walk-up.
+- Fix: delete the `app.logger.setLevel(...)` call. Leave it at NOTSET so it inherits root's level (which `configure_logging()` set from `LOG_LEVEL`). Keep the `handlers.clear()` + `propagate = True` lines — those are still load-bearing for the propagation half of the story.
+- Symptoms: with `LOG_LEVEL=INFO`, blueprint DEBUG lines are suppressed but `app.logger.debug(...)` reaches Loki anyway. Under gunicorn the split is wider than it looks because `app.logger` is `logging.getLogger('<module_name>')` — the same object your app module itself logs through.
+
 **Loki SSL errors on first few startup log messages (gunicorn):**
 - `configure_logging()` was called at module level, which runs in gunicorn's master process before `fork()`. The Loki handler's `requests.Session` and its SSL context were initialized pre-fork, then broke in the child worker because SSL contexts don't survive `fork()`.
 - Fix: move `configure_logging()` inside `create_app()` so it runs post-fork in the worker process (see Flask + Gunicorn section above)
@@ -637,9 +659,11 @@ def create_app() -> Flask:
 
     app = Flask(__name__)
 
+    # Leave app.logger and the dep loggers below at NOTSET so LOG_LEVEL
+    # (applied to root by configure_logging) is honored via the ancestor
+    # walk-up. See the Flask + Gunicorn section for the full rationale.
     app.logger.handlers.clear()
     app.logger.propagate = True
-    app.logger.setLevel(logging.DEBUG)
 
     for name in ('werkzeug', 'gunicorn', 'gunicorn.error', 'gunicorn.access'):
         dep_logger = logging.getLogger(name)
