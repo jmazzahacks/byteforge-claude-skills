@@ -55,6 +55,22 @@ ENV MCP_TRANSPORT=streamable-http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8000
 
+# Healthcheck: probe socket.gethostname(), NOT 127.0.0.1. A loopback
+# probe from inside the container succeeds even when the server is
+# bound only to 127.0.0.1 — the exact bind trap this skill warns about
+# on the FastMCP path. gethostname() resolves to the container's
+# address on the docker network, which is the path nginx actually uses,
+# so a false-healthy state on 127.0.0.1 becomes a real
+# ConnectionRefusedError instead.
+#
+# Port resolution mirrors the FastMCP Path A fallback chain
+# (FASTMCP_PORT → MCP_PORT → 8000), so a user who overrides only
+# FASTMCP_PORT doesn't leave the healthcheck probing the wrong port.
+# On Path B, FASTMCP_PORT is unset so the chain falls through to
+# MCP_PORT — which is what the low-level SDK reads directly.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import os,socket; socket.create_connection((socket.gethostname(), int(os.getenv('FASTMCP_PORT', os.getenv('MCP_PORT','8000')))), timeout=3).close()" || exit 1
+
 CMD ["python", "{entry_point}"]
 ```
 
@@ -127,8 +143,11 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "my_mcp_server",
-    host=os.getenv("FASTMCP_HOST", "127.0.0.1"),
-    port=int(os.getenv("FASTMCP_PORT", "8000")),
+    # Honor MCP_HOST/MCP_PORT as fallbacks: the template sets both name
+    # pairs in the Dockerfile/compose, so a user who edits MCP_PORT
+    # expecting it to take effect isn't silently ignored on Path A.
+    host=os.getenv("FASTMCP_HOST", os.getenv("MCP_HOST", "127.0.0.1")),
+    port=int(os.getenv("FASTMCP_PORT", os.getenv("MCP_PORT", "8000"))),
     stateless_http=True,
 )
 
@@ -289,8 +308,11 @@ if [ "$1" = "--no-cache" ]; then
     NO_CACHE="--no-cache"
 fi
 
+# Seed at 0, not 1: the version published is CURRENT+1, so seeding
+# at 1 makes the very first image :2 and leaves :1 permanently missing
+# from the registry.
 if [ ! -f VERSION ]; then
-    echo "1" > VERSION
+    echo "0" > VERSION
 fi
 
 CURRENT_VERSION=$(cat VERSION)
@@ -357,6 +379,7 @@ lib/
 lib64/
 include/
 pyvenv.cfg
+.venv/
 .Python
 __pycache__/
 *.py[cod]

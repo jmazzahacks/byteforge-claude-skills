@@ -194,10 +194,12 @@ if [ "$1" = "--no-cache" ]; then
     echo "Building with --no-cache flag"
 fi
 
-# Check if VERSION file exists, if not create it with version 1
+# Seed at 0, not 1: the version published is CURRENT+1, so seeding at
+# 1 makes the very first image :2 and leaves :1 permanently missing
+# from the registry.
 if [ ! -f "$VERSION_FILE" ]; then
-    echo "1" > "$VERSION_FILE"
-    echo "Created VERSION file with initial version 1"
+    echo "0" > "$VERSION_FILE"
+    echo "Created VERSION file with initial version 0 (first publish will be :1)"
 fi
 
 # Read current version from file
