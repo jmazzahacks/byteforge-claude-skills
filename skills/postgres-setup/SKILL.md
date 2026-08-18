@@ -430,37 +430,6 @@ class Database:
         conn.rollback()
 
     @staticmethod
-    def _is_dead_conn_error(conn, exc) -> bool:
-        """
-        Decide whether `exc` indicates the underlying socket is dead.
-
-        InterfaceError → always dead (operations on a closed conn/cursor).
-        OperationalError → ambiguous: it's the parent class of
-            SerializationFailure, DeadlockDetected, QueryCanceled, and
-            LockNotAvailable, all of which fire on perfectly healthy
-            conns. Use `conn.closed` as the discriminator: psycopg2 sets
-            it to non-zero only when the socket is actually broken.
-        Bare DatabaseError with `conn is None` → treat as dead. This
-            covers `psycopg2.connect()` raising the bare parent class
-            during pool refill (PQgetResult returns NULL for an EOF
-            socket before PQstatus flips) — same class of bug as the
-            pre-ping arm's. Restricted to `conn is None` because
-            DatabaseError is otherwise ambiguous (IntegrityError,
-            ProgrammingError, DataError all inherit); a refill can
-            only produce connection-setup failures, not those.
-            `psycopg2.pool.PoolError` is NOT a DatabaseError subclass,
-            so pool exhaustion still propagates.
-        Anything else → not a dead-conn signal.
-        """
-        if isinstance(exc, psycopg2.InterfaceError):
-            return True
-        if isinstance(exc, psycopg2.OperationalError):
-            return conn is None or getattr(conn, "closed", 0) != 0
-        if isinstance(exc, psycopg2.DatabaseError) and conn is None:
-            return True
-        return False
-
-    @staticmethod
     def _safe_putback(pool, conn, close: bool) -> None:
         """Best-effort return-to-pool. Falls back to conn.close() on pool error."""
         if conn is None:
@@ -479,28 +448,40 @@ class Database:
         """
         Yield a healthy pooled connection.
 
-        Pre-pings before yielding. Checkout is a two-arm try/except:
-        `pool.getconn()` uses the class-based `_is_dead_conn_error`
-        classifier (propagate on non-dead-conn errors like `PoolError`);
-        `_check_alive` catches `BaseException`, discards the checked-out
-        conn first, then decides retry-vs-propagate — signals still
-        propagate, the conn still goes back. `SELECT 1` has no
-        legitimate non-dead failure mode, so any Exception on that arm
-        is treated as dead regardless of psycopg2 exception class. This
-        covers psycopg2 raising the bare `DatabaseError` parent (not
-        `OperationalError`) when it detects EOF before `conn.closed`
-        flips — the classifier misses that, and pre-split it surfaced
-        as a raw 500 on the caller (ticket 5193642b).
+        Pre-pings before yielding. Checkout is a two-arm try/except,
+        both arms untyped:
+        - `pool.getconn()` carves out `psycopg2.pool.PoolError` (pool
+          exhaustion — a concurrency problem in our code that cycling
+          three more times cannot fix; propagate unwrapped so on-call
+          reads "pool exhausted" rather than "Postgres unreachable"),
+          then retries on ANY other Exception. During refill,
+          `psycopg2.connect()` can raise `OperationalError`,
+          `InterfaceError`, the bare `DatabaseError` parent (EOF
+          before `PQstatus` flips), or a class future psycopg2
+          releases pick that we haven't seen — all are connection-
+          setup failures by construction (no query, so query-failure
+          classes are unreachable). A typed classifier here just left
+          "psycopg2 picked a new class" as a future should-have-
+          retried bug (ticket 36892a9a).
+        - `_check_alive` catches `BaseException`, discards the
+          checked-out conn first, then decides retry-vs-propagate —
+          signals still propagate, the conn still goes back. `SELECT 1`
+          has no legitimate non-dead failure mode, so any Exception on
+          that arm is treated as dead regardless of psycopg2 exception
+          class. This covers psycopg2 raising the bare `DatabaseError`
+          parent (not `OperationalError`) when it detects EOF before
+          `conn.closed` flips — pre-split it surfaced as a raw 500 on
+          the caller (ticket 5193642b).
 
         BaseException handling on the pre-ping arm (v1.18.22): once
         `getconn()` returns, the conn is OUT of the pool. A signal or
         gevent/eventlet `Timeout` unwinding through `_check_alive` MUST
         hand it back or the slot strands permanently — after `maxconn`
-        such events, the getconn arm above correctly refuses to retry
-        the resulting `PoolError` and the worker wedges. The pre-ping
-        blocks on the *exact* condition where a per-request timeout
-        would fire (stale socket), so this path is not theoretical.
-        Ticket f8e4b747 fix.
+        such events, the getconn arm above correctly propagates the
+        resulting `PoolError` (see the `except PoolError: raise` arm)
+        and the worker wedges. The pre-ping blocks on the *exact*
+        condition where a per-request timeout would fire (stale
+        socket), so this path is not theoretical. Ticket f8e4b747 fix.
 
         On dead-conn signals, discards with close=True and retries up
         to MAX_HEALTH_RETRIES times. On retry exhaustion, raises
@@ -517,30 +498,56 @@ class Database:
         for attempt in range(MAX_HEALTH_RETRIES):
             try:
                 conn = self.pool.getconn()
+            except psycopg2.pool.PoolError:
+                # Pool exhausted — every slot is checked out and cannot
+                # be freed by retrying. This is a concurrency / capacity
+                # problem in OUR code (leaked conns, undersized
+                # `maxconn`, or a genuine request-rate spike), NOT a
+                # Postgres availability problem. Propagate the original
+                # `PoolError` unchanged so on-call sees "pool exhausted"
+                # and looks at request concurrency, rather than seeing
+                # the wrapped `RuntimeError("could not acquire...")`
+                # below and looking at Postgres. Motivated by hivemake-
+                # server ticket 36892a9a: a wrapped `PoolError` sent
+                # on-call to the wrong layer during a live incident.
+                raise
             except Exception as e:
-                # Pool checkout failed. Assignment above did not run —
-                # `conn` is provably unbound in this arm, so there is
-                # nothing to put back and no discriminator to read from
-                # a conn object. Classify by exception alone: dead-conn
-                # signals count against the retry budget; everything
-                # else propagates immediately (e.g. `PoolError` on pool
-                # exhaustion — cycling three more times cannot free a
-                # slot). `_is_dead_conn_error(None, e)` handles the
-                # bare `psycopg2.DatabaseError` raised by
-                # `psycopg2.connect()` during refill when it detects
-                # EOF before `PQstatus` flips — same class of bug as
-                # the pre-ping arm's, one layer up.
+                # Any other checkout failure is by construction a
+                # connection-setup problem: `psycopg2.connect()` inside
+                # the refill path can raise `OperationalError`,
+                # `InterfaceError`, the bare `DatabaseError` parent
+                # (EOF detected before `PQstatus` flips — same class of
+                # bug as the pre-ping arm's, one layer up), or a class
+                # future psycopg2 releases pick that we haven't seen.
+                # Query-failure classes (`IntegrityError`,
+                # `ProgrammingError`, `DataError`) CANNOT happen here —
+                # there is no query. So retry on ANY non-`PoolError`
+                # `Exception` without classification; keeping a typed
+                # classifier here just left "psycopg2 picked a new
+                # class" as a future should-have-retried bug (ticket
+                # 36892a9a's "grep for the classifier, not the try-
+                # block" observation).
                 # `except Exception` (not `BaseException`): signals
                 # bypass this handler and propagate directly, matching
                 # the pre-ping and mid-flight cleanup arms.
-                if self._is_dead_conn_error(None, e):
-                    last_err = e
-                    logger.warning(
-                        "DB pool getconn failed (attempt %d/%d): %s",
-                        attempt + 1, MAX_HEALTH_RETRIES, e,
-                    )
-                    continue
-                raise
+                #
+                # Known cost of untyped-retry: a truly non-transient
+                # misconfiguration (`AttributeError` from a monkey-
+                # patched pool, `TypeError` from a wrong-shaped
+                # argument, a custom `AuthError` subclass some
+                # deployment adapter raises) is also retried
+                # MAX_HEALTH_RETRIES times before wrapping in the
+                # `RuntimeError("could not acquire...") from last_err`.
+                # Bounded delay + a few extra log lines; the
+                # `__cause__` chain still exposes the original class
+                # so nothing is hidden — just slower to surface.
+                last_err = e
+                logger.warning(
+                    "DB pool getconn failed (attempt %d/%d): %s",
+                    attempt + 1, MAX_HEALTH_RETRIES, e,
+                    exc_info=True,
+                )
+                continue
 
             try:
                 self._check_alive(conn)
@@ -550,9 +557,10 @@ class Database:
                 # as dead regardless of psycopg2 exception class. This
                 # covers the bare `DatabaseError` raised when psycopg2
                 # detects EOF (PQgetResult NULL) before `PQstatus` flips
-                # `conn.closed` to non-zero — the classifier can't see
-                # that as dead, and pre-split it surfaced as a raw 500
-                # on the caller (real prod incident, ticket 5193642b).
+                # `conn.closed` to non-zero — a typed classifier
+                # couldn't see that as dead (pre-split combined-try),
+                # and it surfaced as a raw 500 on the caller (real prod
+                # incident, ticket 5193642b).
                 #
                 # `except BaseException` (not `Exception`): by the time
                 # `_check_alive` runs, `conn` is already checked OUT of
@@ -561,8 +569,11 @@ class Database:
                 # `SystemExit`) MUST hand the conn back or the slot is
                 # stranded permanently — one leak per occurrence, and
                 # after `maxconn` events the pool exhausts, the getconn
-                # arm above correctly refuses to retry, and the worker
-                # wedges. The gevent/eventlet `Timeout` case is
+                # arm above's explicit `except PoolError: raise` carve-
+                # out correctly propagates the exhaustion unwrapped (so
+                # on-call sees "pool exhausted", not the RuntimeError
+                # wrapper), and the worker wedges. The gevent/eventlet
+                # `Timeout` case is
                 # correlated with this codepath: a per-request timeout
                 # fires exactly where a pre-ping on a stale socket
                 # blocks, not independently. Discard first, then decide
@@ -575,6 +586,7 @@ class Database:
                 logger.warning(
                     "DB checkout pre-ping failed (attempt %d/%d): %s",
                     attempt + 1, MAX_HEALTH_RETRIES, e,
+                    exc_info=True,
                 )
                 continue
 
@@ -822,7 +834,8 @@ def test_bare_database_error_on_check_alive_retries_and_recovers():
     pre-ping arm — the direct reason the combined-try was split.
 
     Regression guard for ticket 5193642b: prod incident where a webhook
-    POST 500'd because `_is_dead_conn_error` only matched OperationalError.
+    POST 500'd because the pre-split classifier only matched
+    OperationalError. The pre-ping arm is now untyped (v1.18.22).
     """
     dead, alive = _dead_conn_bare_database_error(), _alive_conn()
     db = _make_db_with_mocked_pool([dead, alive])
@@ -873,9 +886,10 @@ def test_pool_getconn_bare_database_error_retries_and_recovers():
     """`psycopg2.connect()` inside `pool.getconn()`'s refill path can raise
     the bare `psycopg2.DatabaseError` parent instead of `OperationalError`
     (same PQgetResult-vs-PQstatus timing bug as the pre-ping arm, one
-    layer up). The classifier's `conn is None` DatabaseError case treats
-    this as dead so the retry loop drains the corpse just like an
-    OperationalError refill failure. Regression guard for v1.18.22.
+    layer up). The getconn arm is untyped (v1.18.29) so the retry loop
+    drains the corpse regardless of which class psycopg2 picked.
+    Regression guard for v1.18.22 (bare-DatabaseError coverage) and
+    v1.18.29 (untyped-getconn generalization).
     """
     alive = _alive_conn()
     db = _make_db_with_mocked_pool(
@@ -886,14 +900,16 @@ def test_pool_getconn_bare_database_error_retries_and_recovers():
         assert conn is alive
 
 
-def test_pool_getconn_non_dead_error_propagates():
-    """A non-dead-conn error from `pool.getconn()` — canonically `PoolError`
-    on pool exhaustion — must NOT be swallowed by the retry loop.
-    `PoolError` isn't a `DatabaseError` subclass so `_is_dead_conn_error`
-    returns False; cycling three more times cannot free a slot, and
-    burying it under the RuntimeError points on-call at Postgres
-    instead of at request-volume. Pins the whole reason the getconn
-    arm still classifies at all.
+def test_pool_getconn_pool_error_propagates_unwrapped():
+    """`PoolError` on pool exhaustion must propagate as-is — NOT wrapped
+    in `RuntimeError("could not acquire...")` and NOT swallowed into the
+    retry loop. Cycling three more times cannot free an already-checked-
+    out slot, and burying `PoolError` under the RuntimeError points on-
+    call at Postgres instead of at request-volume. Pins the explicit
+    `except PoolError: raise` carve-out at the top of the getconn arm
+    (v1.18.29). Motivated by hivemake-server ticket 36892a9a where a
+    wrapped PoolError sent on-call to the wrong layer during a live
+    incident.
     """
     from psycopg2.pool import PoolError
     db = _make_db_with_mocked_pool([PoolError("connection pool exhausted")])
@@ -901,6 +917,27 @@ def test_pool_getconn_non_dead_error_propagates():
     with pytest.raises(PoolError):
         with db.get_connection():
             pass
+
+
+def test_pool_getconn_arbitrary_exception_retries_and_recovers():
+    """The getconn arm retries on ANY non-PoolError Exception, not just
+    the psycopg2 classes we've historically seen. Locks in the untyped
+    design (v1.18.29) so a future psycopg2 release that picks a novel
+    class on connection failure — or a wrapper/adapter that re-raises
+    with a custom class — doesn't reintroduce the "should have retried"
+    bug that motivated splitting the getconn arm in v1.18.21. Motivated
+    by hivemake-server ticket 36892a9a: "grep for the classifier, not
+    the try-block" — a typed classifier here left every unseen class
+    as a future should-have-retried bug.
+    """
+    alive = _alive_conn()
+    db = _make_db_with_mocked_pool([
+        RuntimeError("hypothetical class we haven't seen from psycopg2"),
+        alive,
+    ])
+
+    with db.get_connection() as conn:
+        assert conn is alive
 
 
 def test_keyboard_interrupt_during_check_alive_propagates_without_leaking_conn():
