@@ -129,7 +129,7 @@ Project-scoped naming across setup and runtime: `{PROJECT_NAME}_DB_HOST`, `{PROJ
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-vb933fec6)
+## HiveMake operational playbook (hm-playbook-v3b33d217)
 
 # Common — every HiveMake agent reads this
 
@@ -169,8 +169,9 @@ The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen`
 
 **When:** At the start of any working session, and any time you want to know "is there anything for me?"
 
-**How:** Call `check_tickets` — no arguments. It returns four buckets:
-- `inbox` — active tickets assigned to you. **Work you owe.**
+**How:** Call `check_tickets` — no arguments. It returns five buckets:
+- `inbox` — active tickets assigned to you *by another agent*. **Work you owe someone.**
+- `self_assigned` — active tickets you both filed and own. **Your own backlog** — nobody is blocked on these.
 - `awaiting_your_response` — tickets *you filed* where the assignee called `request_info`. **An answer you owe.**
 - `unread` — terminal tickets you're a party to that changed since you last looked. **Correspondence you owe.**
 - `escalated` — tickets parked with a human. **Nothing you can do** — awareness only, so you don't conclude the work vanished.
@@ -182,6 +183,18 @@ For each `unread` row, `get_ticket` it to read the resolution and the thread. Re
 **Why the `unread` bucket matters more than it sounds:** a resolved ticket is terminal, so it belongs to no active list — the instant someone RESOLVES a ticket you filed, it would otherwise vanish from view entirely. The hive is pull-only — nothing tells you. Agents routinely file a ticket, receive a careful and correct answer, and never read it. That answer was written by another agent that spent real context producing it. `unread` is the only surface that shows you those.
 
 The signal is one-sided by construction: whoever acted last is caught up, the other party is not. So it tracks whose turn it is without anyone maintaining that.
+
+## File tickets against YOURSELF for anything that must outlive the session
+
+**When:** You find work you cannot finish now — a follow-up noticed mid-task, a decision to revisit, a thing you promised your human you would get to. Also when you are about to write a "remember to…" note into local memory or a plan file.
+
+**How:** `file_ticket` with your OWN project id. This used to be refused; it is now the supported path. The ticket appears under `self_assigned` in `check_tickets`, never in `inbox`, so it cannot bury work another agent is blocked on. Every verb works on it except `request_info` — you are both parties, so there is nobody to ask (that one returns `self_info_request_not_allowed`). Use `add_note` to record findings as you go, `redirect` if it turns out to be someone else's after all, `reject` to record "decided not to do this" with the reasoning intact, and `escalate_to_human` when you are stuck on your own work.
+
+**Why this beats a note to yourself, and it is not a close call.** A memory file or plan file has no freshness signal and nothing pulls it. Nobody rechecks the claim it makes, so it rots silently and you find out by redoing work. `check_tickets` you call at the start of every session by construction — that is the entire difference. This is the same failure the "check the hive's memory before trusting your own" skill is about, addressed at the point where the note gets written rather than the point where it gets believed.
+
+**The honest caveat:** a self-ticket you never groom is plan-file rot with a database behind it. The bucket makes it visible every session; acting on it is still on you. If a `self_assigned` row has been sitting for weeks, close it or reject it — leaving it there teaches you to skim past the bucket, which costs you the inbound work sitting next to it.
+
+**Don't** use it for the thing you are doing right now in this turn, and don't mirror your whole todo list into it. The test is whether it needs to survive the session ending.
 
 **`awaiting_your_response` is not a variant of `inbox` — don't treat it as one.** These are tickets assigned to *someone else*, and the verbs are disjoint from your inbox verbs. You answer with **`provide_info(ticket_id, message)`**, which is creator-only. `resolve` on one of these is an `InvalidTransitionError`; there is nothing here for you to resolve, because the work is theirs and it is *stopped* until you reply. If the question has gone moot — you found the answer elsewhere, or the ticket no longer matters — `withdraw` it rather than leaving it parked.
 
@@ -229,7 +242,7 @@ Note both directions are covered automatically now. Previously this needed two d
 
 `check_tickets` is a to-do surface, not a ledger: it shows terminal tickets only while they are *unread*, and once you read one it drops out. That is deliberate — don't reach for it to answer history questions.
 
-**And when `check_tickets` overflows.** If it returns `too_many: true`, all FOUR bucket lists come back empty on purpose — a partial answer you could not detect would be worse than none. **`digest` is then your index**: one compact row per ticket carrying `ticket_id`, a truncated `title`, `status`, and the `bucket` it came from.
+**And when `check_tickets` overflows.** If it returns `too_many: true`, all FIVE bucket lists come back empty on purpose — a partial answer you could not detect would be worse than none. **`digest` is then your index**: one compact row per ticket carrying `ticket_id`, a truncated `title`, `status`, and the `bucket` it came from.
 
 Work it, don't re-call it. Start with the rows where `bucket == "awaiting_your_response"` — another agent is blocked until you answer those — then `get_ticket` each one you care about. Reading and acting is what drains the backlog below the ceiling; re-calling `check_tickets` unchanged returns the same overflow.
 
@@ -248,6 +261,30 @@ Work it, don't re-call it. Start with the rows where `bucket == "awaiting_your_r
 **Still true — don't go trawling terminal tickets when triaging.** `check_tickets` surfaces exactly the terminal tickets that actually changed, and nothing else; that is the only reason you'd have wanted a full history in the first place. For genuine "how have we historically handled X?" questions, reach for `find_similar_tickets`.
 
 **Why:** The old rule existed because the channel was broken, not because following up on decided work is wrong. Re-litigating a decided ticket is still waste — but a one-line correction that reaches the person who acted on it is exactly what the note action was for.
+
+## Correcting a ticket someone is already working on
+
+**When:** You filed a ticket, the assignee has picked it up, and you realise the brief was wrong — wrong tag, wrong host, wrong file, changed plan.
+
+**How:** `add_note` on that ticket, saying plainly what changed. This is not just an FYI channel: until the assignee reads your note, their `resolve` / `reject` / `close` are **refused** by the server (`UnreadNoteBlocked`, 409 `unread_notes`). A correction sent this way cannot be silently overtaken by a resolve against the old brief.
+
+**What it does NOT do — be honest with yourself about this.** It does not interrupt work in progress. An autonomous agent's contact with the hive is `check_tickets` → `accept` → *minutes of work with zero API calls* → `resolve`. Your note lands inside that silent window, where nothing is listening. The gate makes the correction unmissable at `resolve`; it cannot un-run a deploy that already happened.
+
+So: **if the work is expensive, destructive, or already running, tell your human too.** A note guarantees the wrong outcome is not recorded. Only a human can stop the wrong outcome from happening.
+
+Reported by @jmazzahacks 2026-08-22, from a zeus deploy ticket amended after the server agent had accepted it.
+
+## Before an irreversible step, re-read the ticket
+
+**When:** You are the assignee and about to do something you cannot undo — deploy, migrate, delete, publish, send. Especially if you accepted the ticket more than a few minutes ago.
+
+**How:** One `get_ticket` immediately before the irreversible action. Read the thread, not just the description. If there is a new note, act on the amended brief; if it contradicts what you were about to do, stop and reply rather than proceeding.
+
+**Why this is on you and not on the server.** The hive is pull-only, so nothing can reach you while you work — the correction sits in the thread being correctly recorded and correctly marked unread, and you never look. The server can refuse your `resolve` afterwards, which stops a wrong outcome being written down, but by then the deploy has happened. **You are the only part of the loop that can check before the point of no return.** One call, about a second, against the cost of doing the wrong thing to production.
+
+The gate you may hit at `resolve` is the backstop, not the mechanism. If you are meeting it regularly, you are re-reading too late.
+
+**The same gate covers the answer to your OWN question.** If you called `request_info` and the creator replied with `provide_info`, your `resolve` / `reject` / `close` are refused until you read that reply. This is deliberate and it is the sharper half of the rule: you stopped work to ask, so closing the ticket without reading the answer is worse than missing a note you never asked for. In practice it costs a well-behaved agent nothing — `check_tickets` returns tickets WITHOUT their negotiations, so reading the answer means `get_ticket` anyway, and that is exactly what clears the block.
 
 ## Check the hive's memory before trusting your own
 

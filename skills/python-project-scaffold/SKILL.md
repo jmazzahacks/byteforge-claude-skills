@@ -18,7 +18,9 @@ Use this skill when:
 
 1. **Directory skeleton** — empty sub-project directories under `{project}/`
 2. **`{project}/CLAUDE.md`** — root development guide describing each sub-project and which skills to use
-3. **`{project}/.gitignore`** — workspace-level gitignore for Python projects
+3. **A `.gitignore` in each sub-project** — Python/Node ignore patterns, written
+   where they actually take effect (the workspace root is deliberately NOT a git
+   repo — see Step 4)
 4. **Next-steps documentation** — tells the user which skills to run in each sub-project
 
 ## Step 1: Gather Project Information
@@ -39,7 +41,7 @@ Use this skill when:
 4. **"Which optional sub-projects do you need?"** (multi-select)
    - `python-scripts` — standalone utility scripts
    - `{project}-api-python` — Python API client library
-   - `{project}-api-js` — TypeScript API client library
+   - `{project}-api-ts` — TypeScript API client library
    - `{project}-frontend` — Next.js frontend
 
 5. **"Does the backend need Celery + Redis for background tasks?"** (yes/no)
@@ -51,7 +53,12 @@ Use this skill when:
 
 ## Step 2: Create Directory Structure
 
-Create empty directories under `{project}/`. Use `mkdir -p` to create each directory with a `.gitkeep` file so they are tracked by git.
+Create empty directories under `{project}/` with `mkdir -p`.
+
+Do **not** add `.gitkeep` files. Each sub-project is its own git repo (Step 5) and
+the workspace root is not a repo at all, so there is nothing tracking these
+directories as empty — and every one of them gets populated by the setup skill
+run inside it.
 
 **Always created:**
 ```
@@ -65,7 +72,7 @@ Create empty directories under `{project}/`. Use `mkdir -p` to create each direc
 ```
 ├── python-scripts/          # if "python-scripts" selected
 ├── {project}-api-python/    # if Python API client selected
-├── {project}-api-js/        # if TypeScript API client selected
+├── {project}-api-ts/        # if TypeScript API client selected
 └── {project}-frontend/         # if Next.js frontend selected
 ```
 
@@ -90,7 +97,7 @@ This is a multi-repo workspace. Each sub-directory is an independent project wit
 {# Include rows for optional sub-projects only if selected: }
 {# | `python-scripts/` | Standalone utility scripts | Scripts | }
 {# | `{project}-api-python/` | Python API client library | pip package (library) | }
-{# | `{project}-api-js/` | TypeScript API client library | npm package | }
+{# | `{project}-api-ts/` | TypeScript API client library | npm package | }
 {# | `{project}-frontend/` | Next.js frontend application | Docker service | }
 
 ## Dependency Chain
@@ -189,20 +196,29 @@ cd {project}-api-python
 # Invoke python-lib-setup skill
 ```
 
-{# Include this section only if {project}-api-js was selected: }
-### {project}-api-js (TypeScript API client)
+{# Include this section only if {project}-api-ts was selected: }
+### {project}-api-ts (TypeScript API client)
 
 Initialize as a TypeScript npm package. Publish to GitHub Packages or npm.
 
 ## Development Commands
 
-Each sub-project with Python uses its own virtual environment:
+Each sub-project with Python uses its own virtual environment, created **at the
+sub-project root** (not in a `bin/` or `.venv/` subdirectory) so that `activate`
+lands at `bin/activate`:
 ```bash
 cd {project}-models/
-python -m venv bin
+python3 -m venv .
 source bin/activate
-pip install -r dev-requirements.txt
+pip install --upgrade -r requirements.txt
 ```
+
+> **Note (Python 3.13+):** `python3 -m venv .` writes a `.gitignore` containing
+> just `*` into the venv root — which is the sub-project root under this
+> convention — so re-creating the venv **overwrites that sub-project's
+> `.gitignore`**. Create the venv first, then write `.gitignore`; if you
+> re-create the venv later, restore the tracked file with
+> `git checkout .gitignore`.
 
 Run tests:
 ```bash
@@ -236,9 +252,30 @@ source bin/activate && python {project_name}.py
 - Replace all placeholders with actual values
 - Do NOT wrap the entire file in a code fence — write it as a real markdown file
 
-## Step 4: Create Root .gitignore
+## Step 4: Create a .gitignore in Each Sub-Project
 
-Create `{project}/.gitignore`:
+**The workspace root is NOT a git repo** — each sub-project is (see Step 5). So a
+`.gitignore` at `{project}/` governs nothing. Write one into **each sub-project
+directory** instead, where it actually takes effect. Write them now — they are not
+the last word, for the reason below.
+
+**CRITICAL — these get clobbered later, and must be re-written.** Since Python
+3.13, `python3 -m venv <path>` writes a `.gitignore` containing just `*` into the
+venv root. The convention here (and in `python-lib-setup`) puts the venv at the
+sub-project root, so the file you write now is overwritten with `*` the moment the
+Step 5 setup skill creates that sub-project's venv — and a subsequent
+`git init && git add .` then silently ignores the entire sub-project. That is why
+Step 5 item 3 exists: re-write these files after the setup skills have run, and
+verify each one is the content below rather than a bare `*`. (`python-lib-setup`
+re-writes its own; `{project}-backend/` and any sub-project whose setup skill does
+not is on you.) Once a good version has been **committed**, `git checkout
+.gitignore` recovers from a later clobber.
+
+Contents for each Python sub-project (`{project}-models/`, `{project}-core/`,
+`{project}-backend/`, `python-scripts/`, `{project}-api-python/`) — the whole
+block below, minus the Node section. For `{project}-frontend/` and
+`{project}-api-ts/`, use the Node, Environment, IDE, OS, and Docker sections and
+drop the Python and virtual-environment ones.
 
 ```gitignore
 # Python
@@ -278,7 +315,7 @@ Thumbs.db
 # Docker
 VERSION
 
-# Node (if frontend selected)
+# Node (frontend / TypeScript client only)
 node_modules/
 .next/
 out/
@@ -288,12 +325,20 @@ out/
 
 After creating all files, tell the user:
 
-1. **Initialize git** in the root `{project}/` directory
+1. **Initialize git in each SUB-PROJECT** — `cd {project}-models/ && git init`, and
+   likewise for every other sub-project. **Do NOT `git init` the workspace root.**
+   This is a multi-repo workspace: `{project}/` is a plain directory that holds
+   independent repos. A root repo would swallow every sub-project as untracked
+   content, which is the opposite of the intended layout.
 2. **Run skills in order** for each sub-project:
    - `cd {project}-models/` → run `python-lib-setup`
    - `cd {project}-core/` → run `python-lib-setup`
    - `cd {project}-backend/` → run `flask-smorest-api`, then `postgres-setup`, then `flask-docker-deployment`, then `byteforge-loki-logging`, then **`uv-supply-chain-hardening`** (locks + hashes the dep install, gates release-age, and routes the private-dep token as a build secret so it never lands in `pyproject.toml` or the image — the default for new Python projects)
    - (If frontend selected) `cd {project}-frontend/` → run `aegis-nextjs-frontend`
    - (If Python API client selected) `cd {project}-api-python/` → run `python-lib-setup`
-3. **Create GitHub repos** for each sub-project under `{github_org}/`
-4. **Set up `.env`** files with required environment variables
+3. **Re-write the per-sub-project `.gitignore` files** (Step 4) — creating each
+   venv overwrote them with a bare `*`. Check every sub-project and restore the
+   Step 4 content before the first `git add .`, or git will silently ignore the
+   whole package.
+4. **Create GitHub repos** for each sub-project under `{github_org}/`
+5. **Set up `.env`** files with required environment variables
