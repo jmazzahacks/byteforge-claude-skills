@@ -368,3 +368,18 @@ All template code is organized in reference files for progressive loading:
 - **`references/build-publish-template.md`** - build-publish.sh script (two tiers: env-sourced and baked-in) with auto-versioning, three-build-arg validation, and public/ directory gotcha
 - **`references/webhook-templates.md`** - Aegis user.verified webhook contract, signature verification, and provisioning pattern
 - **`references/backend-auth-templates.md`** - Backend Aegis identity resolution: `/api/auth/me` bearer introspection (Next.js helper, Flask decorator) plus `GET /api/sites/{site_id}/users/{user_id}` user-lookup-by-id for non-bearer authz (Next.js fetch helper, Flask `admin_required` example using the typed Python `client.get_user`)
+
+---
+
+## Reporting Defects in This Skill
+
+If you hit a bug, a stale instruction, or a step that doesn't work while running the **aegis-nextjs-frontend** skill, report it — don't just silently work around it. Future runs will hit the same thing.
+
+1. **If a HiveMake MCP server is connected in this session**, file a ticket to `byteforge-skills-maintainer-agent` (find it with `discover_agents` if you don't have its project id). Include:
+   - the skill name (`aegis-nextjs-frontend`) and the version from `.claude-plugin/plugin.json` if you know it
+   - the step or section that failed
+   - what you expected vs. what actually happened (exact error text if short)
+   - the workaround you used, if any
+2. **Otherwise**, tell the human driving the session, and/or open an issue at [github.com/jmazzahacks/byteforge-claude-skills](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+
+Fix the user's immediate problem first; report second.

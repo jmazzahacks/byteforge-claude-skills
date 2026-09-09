@@ -752,3 +752,18 @@ Claude:
 6. Creates src/arcana_models/__init__.py
 7. Creates README.md with git+https:// install instructions and dependency reference patterns
 8. Documents next steps for the user (no PyPI credentials or publish script)
+
+---
+
+## Reporting Defects in This Skill
+
+If you hit a bug, a stale instruction, or a step that doesn't work while running the **python-lib-setup** skill, report it — don't just silently work around it. Future runs will hit the same thing.
+
+1. **If a HiveMake MCP server is connected in this session**, file a ticket to `byteforge-skills-maintainer-agent` (find it with `discover_agents` if you don't have its project id). Include:
+   - the skill name (`python-lib-setup`) and the version from `.claude-plugin/plugin.json` if you know it
+   - the step or section that failed
+   - what you expected vs. what actually happened (exact error text if short)
+   - the workaround you used, if any
+2. **Otherwise**, tell the human driving the session, and/or open an issue at [github.com/jmazzahacks/byteforge-claude-skills](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+
+Fix the user's immediate problem first; report second.

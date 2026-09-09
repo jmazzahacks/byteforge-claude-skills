@@ -696,3 +696,18 @@ This pattern:
 - Copies only installed packages to runtime
 - Results in smaller final image
 - Includes curl for health checks
+
+---
+
+## Reporting Defects in This Skill
+
+If you hit a bug, a stale instruction, or a step that doesn't work while running the **flask-docker-deployment** skill, report it — don't just silently work around it. Future runs will hit the same thing.
+
+1. **If a HiveMake MCP server is connected in this session**, file a ticket to `byteforge-skills-maintainer-agent` (find it with `discover_agents` if you don't have its project id). Include:
+   - the skill name (`flask-docker-deployment`) and the version from `.claude-plugin/plugin.json` if you know it
+   - the step or section that failed
+   - what you expected vs. what actually happened (exact error text if short)
+   - the workaround you used, if any
+2. **Otherwise**, tell the human driving the session, and/or open an issue at [github.com/jmazzahacks/byteforge-claude-skills](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+
+Fix the user's immediate problem first; report second.

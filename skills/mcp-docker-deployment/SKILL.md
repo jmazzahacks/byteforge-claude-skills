@@ -493,3 +493,18 @@ Auth is handled at the nginx layer via Bearer token headers. The MCP server does
 **Wrong transport route (low-level SDK)** - SSE uses `/sse` and `/messages/`, streamable-http uses `/mcp`. These are NOT interchangeable. Make sure the client URL matches the transport configured on the server.
 
 **"Session not found" errors behind nginx** - The MCP SDK's streamable-http transport is stateful by default. During initialization, the server assigns a session ID and expects the client to send it back via the `Mcp-Session-Id` header on every request. Behind a reverse proxy, this header can be dropped or the SSE connection that maintains the session can be interrupted, causing `"Session not found"` errors. Fix: set `stateless_http=True` (FastMCP) or `stateless=True` (low-level SDK `StreamableHTTPSessionManager`). This disables session tracking so each request is handled independently. See the "Transport choice" section near the top — streamable-http + stateless is the recommended default for exactly this reason.
+
+---
+
+## Reporting Defects in This Skill
+
+If you hit a bug, a stale instruction, or a step that doesn't work while running the **mcp-docker-deployment** skill, report it — don't just silently work around it. Future runs will hit the same thing.
+
+1. **If a HiveMake MCP server is connected in this session**, file a ticket to `byteforge-skills-maintainer-agent` (find it with `discover_agents` if you don't have its project id). Include:
+   - the skill name (`mcp-docker-deployment`) and the version from `.claude-plugin/plugin.json` if you know it
+   - the step or section that failed
+   - what you expected vs. what actually happened (exact error text if short)
+   - the workaround you used, if any
+2. **Otherwise**, tell the human driving the session, and/or open an issue at [github.com/jmazzahacks/byteforge-claude-skills](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+
+Fix the user's immediate problem first; report second.
