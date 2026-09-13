@@ -27,8 +27,8 @@ Use this skill when:
 
 **Fix:** every Step in this skill assumes multi-worker. The pieces are:
 
-1. `prometheus_flask_exporter.GunicornPrometheusMetrics` (multiproc-aware)
-2. `PROMETHEUS_MULTIPROC_DIR` env var set, dir cleaned on startup
+1. `prometheus_flask_exporter.multiprocess.GunicornInternalPrometheusMetrics` (multiproc-aware, serves `/metrics` on the app's own port)
+2. `PROMETHEUS_MULTIPROC_DIR` env var set, dir contents cleaned on startup, dir writable by the container user
 3. `gunicorn_conf.py` with `child_exit` hook so dead workers release their shards
 4. Custom Gauges declare `multiprocess_mode='livesum'` (or similar) — or they are silently dropped
 5. Redis as the source-of-truth for cross-worker business counters (optional)
@@ -56,7 +56,7 @@ Skip any of these and metrics will look fine in dev (single process) and silentl
    - Where `create_app()` lives
 3. **"Does this service run under gunicorn with more than one worker?"** (yes/no — assume yes if unsure)
    - If yes: full multiproc setup (Steps 4 and 5)
-   - If no: simpler single-process path, but **still scaffold the multiproc setup** behind a `PROMETHEUS_MULTIPROC_DIR` env-var gate so the service stays safe when scaled up later
+   - If no: **still scaffold the multiproc setup** — Step 3's template already gates on `PROMETHEUS_MULTIPROC_DIR`, so the service stays safe when scaled up later
 4. **"Is Redis available to this service?"** (yes/no)
    - If yes: scaffold Step 6's Redis-backed business metrics pattern
    - If no: skip Step 6; document it as a follow-up if Redis is added later
@@ -92,7 +92,8 @@ Add inside `create_app()` in `{app_file}.py`, **after** `Flask(__name__)` and **
 ```python
 import os
 from flask import Flask
-from prometheus_flask_exporter.multiprocess import GunicornPrometheusMetrics
+from prometheus_flask_exporter import PrometheusMetrics
+from prometheus_flask_exporter.multiprocess import GunicornInternalPrometheusMetrics
 
 
 def create_app() -> Flask:
@@ -100,11 +101,20 @@ def create_app() -> Flask:
 
     # ... existing setup (logging, etc.) ...
 
-    # Prometheus metrics — multiproc-aware. Reads PROMETHEUS_MULTIPROC_DIR
-    # automatically; if unset, falls back to single-process mode (only
-    # safe for dev or workers=1).
-    metrics = GunicornPrometheusMetrics(
+    # Prometheus metrics. The multiproc class RAISES ValueError when
+    # PROMETHEUS_MULTIPROC_DIR is unset or not an existing directory — there
+    # is no built-in fallback — so gate explicitly: multiproc under gunicorn,
+    # plain single-process metrics for local runs and tests. Test for key
+    # PRESENCE, not truthiness: the library's /metrics handler switches to
+    # multiproc whenever the key exists, so an empty value must not select
+    # PrometheusMetrics (it would 500 on every scrape instead of failing fast).
+    if 'PROMETHEUS_MULTIPROC_DIR' in os.environ:
+        metrics_class = GunicornInternalPrometheusMetrics
+    else:
+        metrics_class = PrometheusMetrics
+    metrics = metrics_class(
         app,
+        path='{metrics_path}',
         defaults_prefix='flask',
         group_by='endpoint',  # group HTTP latency by Flask endpoint name, not URL path
     )
@@ -124,6 +134,22 @@ app = create_app()
 **CRITICAL**: Replace:
 - `{app_file}` → your main application filename
 - `{application_tag}` → the tag from Step 1, Q1
+- `{metrics_path}` → the scrape path from Step 1, Q5 (default `/metrics`)
+
+**Test suites that call `create_app()` more than once**: the single-process `PrometheusMetrics` branch registers its default metrics on the global `prometheus_client.REGISTRY`, so a second `create_app()` in the same process raises `ValueError: Duplicated timeseries in CollectorRegistry`. Build the app once per test session (session-scoped fixture), or pass `registry=CollectorRegistry()` to `PrometheusMetrics` in tests.
+
+**Why `GunicornInternalPrometheusMetrics` and NOT `GunicornPrometheusMetrics`**: the names are one word apart and behave completely differently. `GunicornPrometheusMetrics` discards any `path` argument and never registers a Flask route — it expects a **separate** metrics HTTP server started from a gunicorn `when_ready` hook. Used on its own, `/metrics` returns 404 while shards are silently written to disk, so everything looks healthy until the first scrape. `GunicornInternalPrometheusMetrics` registers `/metrics` on the app itself (same port as your API); keep it off the public internet at the nginx layer (see Step 9).
+
+**Alternative — separate metrics port** (only if you want metrics on a port that is never proxied): use `GunicornPrometheusMetrics` in `create_app()` instead, and add to `gunicorn_conf.py`:
+
+```python
+from prometheus_flask_exporter.multiprocess import GunicornPrometheusMetrics
+
+def when_ready(server):
+    GunicornPrometheusMetrics.start_http_server_when_ready({metrics_port})
+```
+
+Replace `{metrics_port}` with a port distinct from the app's bind port. Without that `when_ready` hook this variant exposes nothing.
 
 **Why inside `create_app()` and not at module level**: gunicorn imports the module in each worker post-fork. Module-level initialization runs in the master process and breaks multiproc shard ownership. This matches the same fork-safety rule that [[byteforge-loki-logging]] documents for the Loki handler.
 
@@ -131,13 +157,13 @@ app = create_app()
 
 ### What this gives you for free
 
-- `/metrics` endpoint mounted automatically
+- `/metrics` endpoint registered on the app (`GunicornInternalPrometheusMetrics` / `PrometheusMetrics` only — see above)
 - `flask_http_request_total{method,status,endpoint}` — request counter
 - `flask_http_request_duration_seconds{method,status,endpoint}` — latency histogram (p50/p95/p99 via PromQL)
 - `flask_http_request_exceptions_total{method,endpoint}` — unhandled exception counter
 - Default process metrics: `process_resident_memory_bytes`, `process_cpu_seconds_total`, `process_start_time_seconds`, GC stats
 
-### Note: raw `prometheus_client` path (only if you can't use `GunicornPrometheusMetrics`)
+### Note: raw `prometheus_client` path (only if you can't use `prometheus_flask_exporter`)
 
 Some services have reason not to adopt `prometheus_flask_exporter` (custom transport, non-Flask consumer of the same registry, etc.). The canonical bare-bones multiproc pattern in upstream `prometheus_client` docs looks like this:
 
@@ -197,11 +223,12 @@ That single hook is the only thing this file must do for metrics. Add other guni
 
 ## Step 5: Deploy-Side Setup (Dockerfile / docker-compose / systemd)
 
-Three things must happen at container/service startup, in this order:
+Four things must happen at container/service startup, in this order:
 
 1. `PROMETHEUS_MULTIPROC_DIR` is exported
-2. That directory is created fresh (stale shards from a previous container exit will inflate counters)
-3. gunicorn is launched with `-c gunicorn_conf.py`
+2. That directory exists and its **contents** are cleared (stale shards from a previous container exit will inflate counters)
+3. That directory is writable by the user gunicorn runs as
+4. gunicorn is launched with `-c gunicorn_conf.py`
 
 ### Option A: Docker Compose with an entrypoint script
 
@@ -214,8 +241,20 @@ set -e
 : "${PROMETHEUS_MULTIPROC_DIR:=/tmp/prometheus_multiproc}"
 export PROMETHEUS_MULTIPROC_DIR
 
-rm -rf "$PROMETHEUS_MULTIPROC_DIR"
+# Clear the CONTENTS, never the directory itself: in compose the directory is
+# a tmpfs mountpoint, and `rm -rf` on a mountpoint fails ("Operation not
+# permitted"), which aborts this script under `set -e` before gunicorn starts.
 mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
+find "$PROMETHEUS_MULTIPROC_DIR" -mindepth 1 -delete 2>/dev/null || true
+
+# Defense in depth: if the mount came up with the wrong owner (e.g. root:root
+# 0755 after a host reboot), every worker would die with PermissionError on its
+# first shard. Fall back to a private directory instead of crash-looping.
+if [ ! -w "$PROMETHEUS_MULTIPROC_DIR" ]; then
+    echo "WARNING: $PROMETHEUS_MULTIPROC_DIR is not writable by $(id -un); using a temporary directory for metric shards" >&2
+    PROMETHEUS_MULTIPROC_DIR="$(mktemp -d /tmp/prometheus_multiproc.XXXXXX)"
+    export PROMETHEUS_MULTIPROC_DIR
+fi
 
 exec gunicorn -c gunicorn_conf.py -b 0.0.0.0:{port} {app_module}:app "$@"
 ```
@@ -238,10 +277,18 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 services:
   {app_name}:
     tmpfs:
-      - /tmp/prometheus_multiproc
+      # Owner and mode MUST be explicit. A bare tmpfs entry happens to come up
+      # 1777 on first create, but Docker can remount it root:root 0755 when it
+      # restarts the same container after a host reboot — a non-root container
+      # user then cannot write shards and every worker dies at boot.
+      - /tmp/prometheus_multiproc:uid={container_uid},gid={container_uid},mode=0700
     environment:
       - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc
 ```
+
+**CRITICAL**: Replace `{container_uid}` with the uid of the user the image runs as. [[flask-docker-deployment]] and [[mcp-docker-deployment]] pin `appuser` to uid `1000` — use `1000` with those. If your Dockerfile creates the user without `--uid`, pin it; otherwise the uid can drift from this mount.
+
+**Why this matters for alerting**: `restart: unless-stopped` restarts the *same* container, so a boot-time crash here never self-heals — it crash-loops until someone runs `docker compose up -d --force-recreate`. A restart-count or container-health alert is the only way anyone finds out.
 
 ### Option B: systemd unit
 
@@ -380,14 +427,22 @@ class RedisBusinessMetricsCollector(Collector):
             yield m
 ```
 
-**Register the collector once, inside `create_app()`** (after `GunicornPrometheusMetrics`):
+**Serve the collector from its own registry and route, inside `create_app()`** (after Step 3's `metrics` object):
 
 ```python
-from prometheus_client import REGISTRY
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 from metrics_redis import RedisBusinessMetricsCollector
 
-REGISTRY.register(RedisBusinessMetricsCollector(application_tag='{application_tag}'))
+business_registry = CollectorRegistry()
+business_registry.register(RedisBusinessMetricsCollector(application_tag='{application_tag}'))
+
+@app.route('{metrics_path}/business')
+@metrics.do_not_track()
+def business_metrics():
+    return generate_latest(business_registry), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 ```
+
+**Do not** register it on `prometheus_client.REGISTRY` **or** on `metrics.registry`: whenever `PROMETHEUS_MULTIPROC_DIR` is set, `prometheus_flask_exporter` builds a brand-new `CollectorRegistry` + `MultiProcessCollector` on every `/metrics` request and ignores both, so the collector silently never appears in the scrape. A dedicated registry is also safe for multi-worker use — the values live in Redis, so any worker answers identically. Add `{metrics_path}/business` as a second scrape job (Step 9).
 
 **Use it from anywhere:**
 
@@ -415,9 +470,20 @@ Custom collectors that read Redis on every scrape can explode if you create one 
 
 Run these checks **after deploying**. Skipping this step is how the multi-worker bug ships to production unnoticed.
 
+### Check 0: `/metrics` exists and the container is actually running
+
+Every other check assumes this. Run it first, against the internal port:
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' http://localhost:{port}/metrics   # want 200
+docker ps --filter name={app_name} --format '{{.Status}}'                    # want "Up ...", not "Restarting"
+```
+
+**Fail (404)**: the wrong metrics class is in Step 3 (`GunicornPrometheusMetrics` without a `when_ready` hook). **Fail (container restarting / absent)**: check `docker logs` against the Failure Decoder rows for `Operation not permitted`, `PermissionError`, and `ValueError`.
+
 ### Check 1: An application Counter is monotonically non-decreasing
 
-Pick a `Counter` that you have declared in your application (or `flask_http_request_total` if you used `GunicornPrometheusMetrics` from Step 3). Do **not** substitute `process_*`, `python_gc_*`, or `python_info` — those are per-worker by design (see Multi-Worker Gunicorn Trap section) and would false-FAIL this check even with multiproc wired correctly.
+Pick a `Counter` that you have declared in your application (or `flask_http_request_total` from Step 3). Do **not** substitute `process_*`, `python_gc_*`, or `python_info` — those are per-worker by design (see Multi-Worker Gunicorn Trap section) and would false-FAIL this check even with multiproc wired correctly.
 
 ```bash
 for i in 1 2 3 4 5; do
@@ -495,6 +561,14 @@ scrape_configs:
       - targets: ['<host>:<port>']
         labels:
           application: '{application_tag}'
+  # Only if Step 6's Redis-backed business metrics were scaffolded:
+  - job_name: '{application_tag}-business'
+    metrics_path: /metrics/business
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['<host>:<port>']
+        labels:
+          application: '{application_tag}'
 ```
 
 ### Notes for the Prometheus operator
@@ -511,7 +585,7 @@ Things that look fine in dev and break in prod. All four are real and have shipp
 |---|------|---------|-----|
 | 1 | No multiproc wiring under multi-worker gunicorn | `rate()` 5–10× too high; an application Counter "resets" between scrapes; a Gauge bounces between unrelated values | Steps 3, 4, 5 — all three are needed; any one missing leaves the bug. **Do not** use `process_start_time_seconds` plurality as the diagnostic — it is always per-worker regardless of multiproc wiring |
 | 2 | Gauges declared without `multiprocess_mode` | Gauge disappears from `/metrics` after enabling multiproc | Add `multiprocess_mode='livesum'` (or `'liveall'`, `'max'`, `'min'`) |
-| 3 | `PROMETHEUS_MULTIPROC_DIR` not cleaned on startup | Counter values appear pre-loaded from a prior container's shards; `rate()` initially negative then settles | `rm -rf $PROMETHEUS_MULTIPROC_DIR/*` in entrypoint BEFORE launching gunicorn |
+| 3 | `PROMETHEUS_MULTIPROC_DIR` not cleaned on startup | Counter values appear pre-loaded from a prior container's shards; `rate()` initially negative then settles | `find "$PROMETHEUS_MULTIPROC_DIR" -mindepth 1 -delete` in entrypoint BEFORE launching gunicorn — clear contents only; never `rm -rf` the directory itself (it is a tmpfs mountpoint) |
 | 4 | High-cardinality labels (user ID, request ID, full URL path) | Prometheus storage/memory blows up; queries slow to crawl | Use `group_by='endpoint'` not URL path; never label by user/request ID; for Redis collector, never key on high-cardinality dimensions |
 
 ## Failure Decoder
@@ -519,13 +593,17 @@ Things that look fine in dev and break in prod. All four are real and have shipp
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `rate(flask_http_request_total[5m])` returns 5–10× the real traffic | Multi-worker gunicorn without multiproc — each worker keeps a private registry, scrapes bounce between them, PromQL reads the bouncing as counter resets and manufactures phantom traffic | Apply Steps 3, 4, 5 in full |
-| An application Counter's value bounces (e.g. 1247 → 893 → 1402 → 651) across consecutive scrapes | Same as above — multiproc collector isn't in the `/metrics` response path; scrapes are landing on different workers with private registries | Confirm `PROMETHEUS_MULTIPROC_DIR` is set in the running container (`docker exec ... env \| grep PROMETHEUS`), confirm `GunicornPrometheusMetrics(app)` is called in `create_app()`, confirm `gunicorn_conf.py` is passed with `-c` |
+| An application Counter's value bounces (e.g. 1247 → 893 → 1402 → 651) across consecutive scrapes | Same as above — multiproc collector isn't in the `/metrics` response path; scrapes are landing on different workers with private registries | Confirm `PROMETHEUS_MULTIPROC_DIR` is set in the running container (`docker exec ... env \| grep PROMETHEUS`), confirm `GunicornInternalPrometheusMetrics` is the class selected in `create_app()`, confirm `gunicorn_conf.py` is passed with `-c` |
+| `/metrics` returns 404 but shard `.db` files are appearing in `PROMETHEUS_MULTIPROC_DIR` | `GunicornPrometheusMetrics` (no "Internal") was used — it ignores `path` and never registers a Flask route; it expects a separate server started from a `when_ready` hook | Switch to `GunicornInternalPrometheusMetrics` (Step 3), or add the `when_ready` hook and scrape the separate port |
+| `ValueError: one of env PROMETHEUS_MULTIPROC_DIR or env prometheus_multiproc_dir must be set and be a directory` at app startup / test collection | Multiproc class instantiated with the env var unset, or set to a directory that does not exist yet — there is no automatic fallback | Use Step 3's env-var gate (`PrometheusMetrics` when unset); ensure the entrypoint `mkdir -p`s the dir before gunicorn |
+| Container exits at boot: `rm: cannot remove '/tmp/prometheus_multiproc': Operation not permitted` | Entrypoint runs `rm -rf` on the directory, which is a tmpfs mountpoint; `set -e` aborts before gunicorn | Clear contents only: `find "$PROMETHEUS_MULTIPROC_DIR" -mindepth 1 -delete` (Step 5) |
+| Container crash-loops (often only after a host reboot): `PermissionError: [Errno 13] Permission denied: '/tmp/prometheus_multiproc/gauge_...db'` | tmpfs mounted without `uid`/`gid`/`mode`, came up `root:root 0755`, and the container runs as non-root. `restart: unless-stopped` reuses the same container, so it never clears | Set `uid={container_uid},gid={container_uid},mode=0700` on the tmpfs (Step 5), add the entrypoint writability fallback, then `docker compose up -d --force-recreate` |
 | Gauge metric missing from `/metrics` entirely | Gauge was declared without `multiprocess_mode` — the multiproc collector drops aggregation-ambiguous gauges silently | Add `multiprocess_mode='livesum'` (or `'liveall'`/`'max'`/`'min'`/`'mostrecent'` as appropriate) |
 | `process_start_time_seconds`, `python_info`, or `process_cpu_seconds_total` returns N distinct values | **Not a bug.** `ProcessCollector`, `PlatformCollector`, and `GCCollector` are per-worker by design and are never aggregated by `MultiProcessCollector`. Diagnose using application metrics (Counter/Histogram/Gauge) instead | None — this is documented `prometheus_client` behavior, not a multiproc problem |
-| `/metrics` is missing `process_*` and `python_info` entirely (under raw `prometheus_client`, not `GunicornPrometheusMetrics`) | `ProcessCollector` and `PlatformCollector` were not registered on the fresh `CollectorRegistry()` used by `MultiProcessCollector` — they only live on the global `REGISTRY` | Register them explicitly: see "Note: raw `prometheus_client` path" in Step 3 |
+| `/metrics` is missing `process_*` and `python_info` entirely (under raw `prometheus_client`, not `prometheus_flask_exporter`) | `ProcessCollector` and `PlatformCollector` were not registered on the fresh `CollectorRegistry()` used by `MultiProcessCollector` — they only live on the global `REGISTRY` | Register them explicitly: see "Note: raw `prometheus_client` path" in Step 3 |
 | `/metrics` returns 500 with `FileNotFoundError` in logs pointing at `PROMETHEUS_MULTIPROC_DIR` | Env var is set, but the directory does not exist or is not writable by the gunicorn user | Add the `mkdir -p $PROMETHEUS_MULTIPROC_DIR` step to entrypoint/ExecStartPre; verify file permissions match the runtime user |
-| Counter values appear inflated at container startup and slowly decrease | Stale shards from a previous container's exit weren't cleaned, multiproc collector summed them with the new worker shards | Add `rm -rf $PROMETHEUS_MULTIPROC_DIR/*` to entrypoint BEFORE launching gunicorn |
-| `redis.exceptions.ConnectionError` in `/metrics` response | `RedisBusinessMetricsCollector` is registered but Redis is unreachable; the custom collector raises during scrape and the whole `/metrics` response fails | Wrap the `collect()` method body in a `try/except redis.RedisError` that logs and yields nothing — a Redis outage should degrade business metrics, not kill the scrape |
+| Counter values appear inflated at container startup and slowly decrease | Stale shards from a previous container's exit weren't cleaned, multiproc collector summed them with the new worker shards | Add `find "$PROMETHEUS_MULTIPROC_DIR" -mindepth 1 -delete` to entrypoint BEFORE launching gunicorn |
+| `redis.exceptions.ConnectionError` in `/metrics/business` response | `RedisBusinessMetricsCollector` is registered but Redis is unreachable; the custom collector raises during scrape and the whole `/metrics/business` response fails | Wrap the `collect()` method body in a `try/except redis.RedisError` that logs and yields nothing — a Redis outage should degrade business metrics, not kill the scrape |
 | Custom Redis-backed metric reports 0 even though `incr()` is being called | `application_tag` mismatch between `METRIC_KEY_PREFIX` in writes and reads, or wrong Redis DB number in `REDIS_URL` | `redis-cli KEYS 'metrics:*'` to inspect; align prefixes; verify `REDIS_URL` is identical across the app and the collector |
 | Cardinality explosion — Prometheus storage 100×, queries time out | High-cardinality label in a metric (user ID, request ID, full URL path with IDs) | Find the offending metric in `/metrics` (look for thousands of unique label combinations on one metric); switch to `group_by='endpoint'`; never label by entity ID |
 

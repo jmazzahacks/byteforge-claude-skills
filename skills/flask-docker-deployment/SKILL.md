@@ -99,7 +99,7 @@ RUN --mount=type=secret,id=cr_pat \
 COPY . .
 
 # Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser
+RUN useradd --uid 1000 --create-home --shell /bin/bash appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
@@ -151,7 +151,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN useradd --create-home --shell /bin/bash appuser
+RUN useradd --uid 1000 --create-home --shell /bin/bash appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
@@ -683,7 +683,7 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 COPY . .
 ENV PATH=/root/.local/bin:$PATH
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+RUN useradd --uid 1000 --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 ENV PORT=6100
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

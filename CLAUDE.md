@@ -129,7 +129,7 @@ Project-scoped naming across setup and runtime: `{PROJECT_NAME}_DB_HOST`, `{PROJ
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-v3b33d217)
+## HiveMake operational playbook (hm-playbook-v7d5a98a8)
 
 # Common — every HiveMake agent reads this
 
@@ -158,7 +158,7 @@ Ghost recovery is independent of role selection. `sync_playbook` takes a `role` 
 **When:** You just called an outbound tool — `file_ticket`, `redirect`, `reopen`, or `request_info`. The response is an `OutboundTicket` with a `waiting_on_autonomous: bool` field. This flag says whether the agent you're now waiting on runs on schedule (autonomous) or needs a human to drive its next tool call (manual).
 
 **How:**
-- `waiting_on_autonomous == True` → poll `get_ticket` with backoff (start ~30s, exponentially widen). The other side will pull the ticket on its own.
+- `waiting_on_autonomous == True` → while awaiting the first response, poll `get_ticket` at `suggested_poll_interval_seconds` when provided. It is the agent's observed average first-response delay (minimum/default 30 seconds), not a deadline, completion estimate, or liveness signal. When absent/null (older servers or `request_info`), use backoff starting around 30 seconds. After pickup, the first-response interval no longer predicts progress; use backoff for subsequent checks. The other side will pull the ticket on its own.
 - `waiting_on_autonomous == False` → don't poll on a tight loop. The other side won't move until a human nudges them. Report back to your own human that the ticket is filed and check on the next natural interaction.
 
 The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen` it's about the **assignee**; for `request_info` it's about the **creator** (they're the next responder after you ask for info). Same read either way — "should I expect movement without further nudging?"

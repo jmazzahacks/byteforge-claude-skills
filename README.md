@@ -321,7 +321,7 @@ A skill that wires Prometheus metrics into a Python/Flask app **safely under mul
 
 **What it creates:**
 - `requirements.txt` entries for `prometheus_client`, `prometheus_flask_exporter`, optional `redis`
-- `GunicornPrometheusMetrics` wired inside `create_app()` (post-fork safe)
+- `GunicornInternalPrometheusMetrics` wired inside `create_app()` (post-fork safe, `/metrics` on the app port), gated on `PROMETHEUS_MULTIPROC_DIR` so local runs and tests still start
 - `gunicorn_conf.py` with `child_exit` hook for multiproc shard cleanup
 - Dockerfile/docker-compose/systemd snippets for `PROMETHEUS_MULTIPROC_DIR` + tmpfs + startup dir cleanup
 - Custom-metric examples for both file-multiproc (with Gauge `multiprocess_mode`) and Redis-backed business metrics
@@ -335,8 +335,9 @@ A skill that wires Prometheus metrics into a Python/Flask app **safely under mul
 - ✅ Redis-backed custom collector for cross-worker business counters/gauges
 - ✅ Gauge `multiprocess_mode` documented (otherwise silently dropped)
 - ✅ tmpfs for the multiproc shard directory (no disk I/O per metric increment)
-- ✅ Startup `rm -rf` ensures no stale-shard inflation after redeploys
-- ✅ Post-deploy verification checklist (counter monotonicity, scrape parity)
+- ✅ Startup shard cleanup (contents only — safe on a tmpfs mountpoint) ensures no stale-shard inflation after redeploys
+- ✅ tmpfs mounted with explicit uid/gid/mode so non-root containers survive host reboots
+- ✅ Post-deploy verification checklist (`/metrics` reachable, counter monotonicity, scrape parity)
 - ✅ Importable Grafana dashboard parameterized on `application`
 
 **Design Principles:**

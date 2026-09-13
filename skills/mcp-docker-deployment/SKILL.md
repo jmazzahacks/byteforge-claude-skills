@@ -44,8 +44,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY {entry_point} .
 # COPY additional files/directories as needed
 
-# Non-root user
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+# Non-root user — uid pinned so tmpfs mounts (e.g. byteforge-prometheus-metrics) can set a matching owner
+RUN useradd --uid 1000 --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
