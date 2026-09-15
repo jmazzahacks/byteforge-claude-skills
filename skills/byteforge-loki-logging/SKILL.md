@@ -259,7 +259,7 @@ When running Flask under gunicorn, werkzeug and gunicorn create their own logger
 
 **Everything must be done inside `create_app()`** — not at module level — for two reasons:
 
-1. **Logger override**: Flask and gunicorn set up their loggers during app initialization and would override anything done earlier.
+1. **One place for all logging wiring**: gunicorn attaches its own handlers to `gunicorn.error` / `gunicorn.access` in the master process *before* it imports your app, so by the time `create_app()` runs those handlers exist and can be cleared. Keeping the clearing right next to `configure_logging()` means the whole root-logger setup lives in one function that runs once per worker.
 2. **Gunicorn fork/SSL**: `configure_logging()` creates a Loki handler with a `requests.Session` and SSL context. If called at module level, this runs in gunicorn's **master process** before `fork()`. The SSL context doesn't survive the fork into worker processes, causing SSL errors on the first log messages until the session reconnects. Moving it into `create_app()` ensures the SSL context is created in the worker process where it will be used.
 
 ```python
@@ -301,7 +301,9 @@ def create_app() -> Flask:
         dep_logger.handlers.clear()
         dep_logger.propagate = True
 
-    # ... register blueprints, configure Api, etc.
+    # ... register blueprints, configure Api, etc. — before or after the
+    # loop above; the order does not matter (see the note below the
+    # Flask + Gunicorn example).
 
     return app
 
@@ -311,7 +313,18 @@ app = create_app()
 
 **CRITICAL**: `configure_logging()` must be the first thing inside `create_app()`, before any code that logs. Do NOT call it at module level.
 
-**CRITICAL**: The `for` loop clearing dependency loggers must run **after** Flask and Api are initialized (so their logger setup has already run), otherwise Flask/gunicorn will re-create their handlers and override your changes.
+**The dependency-logger loop can go anywhere inside `create_app()`** — before or after `Flask(__name__)`, `Api(app)`, or blueprint registration. (Earlier versions of this skill claimed it had to follow `Api` initialization; that was wrong, and contradicted the examples.) Verified against gunicorn 26.2, Flask 3.1, Werkzeug 3.1, and flask-smorest 0.47 with an A/B test — loop before vs. after `Api(app)` — which produced identical results: `gunicorn.access` and worker-side `gunicorn.error` records reached root in both. Why no ordering applies:
+- **gunicorn** creates the `gunicorn.error` / `gunicorn.access` handlers (and sets `propagate=False`) in the master process before importing your app. Workers do not repeat that setup, so nothing re-creates the handlers after you clear them.
+- **Werkzeug and Flask** attach their default `StreamHandler` only when no handler exists anywhere up the logger tree. `configure_logging()` has already put one on root, so they add nothing.
+- **flask-smorest's `Api`** does not configure logging at all.
+
+The only ordering that matters is the CRITICAL rule above: `configure_logging()` first.
+
+**Verify after a deploy** (in Grafana/Loki):
+- `{application="<your-tag>"} | json | logger="gunicorn.error"` — should show `Worker exiting (pid: N)` records around a container rotation.
+- `{application="<your-tag>"} | json | logger="gunicorn.access"` — per-request lines, but **only if an access log is configured** (e.g. `--access-logfile -`). Without one, gunicorn emits no access records at all, so their absence proves nothing.
+
+**Gunicorn master-process records never reach Loki — by design.** `configure_logging()` runs post-fork inside the worker, and the master never imports your app, so it never gets the Loki handler. Master records stay on stdout: `Starting gunicorn`, `Listening at`, `Booting worker with pid`, `Handling signal`, `Shutting down: Master` — and, more importantly, **port-bind failures, workers that die before booting, and `WORKER TIMEOUT` kills**. A service that looks silent in Loki may be healthy-and-idle or failing to start; check `docker logs <container>` to tell which. Do not move `configure_logging()` to module level to "fix" this — that reintroduces the pre-fork SSL breakage described above.
 
 ### Multiprocessing / Forked Child Processes
 
@@ -734,6 +747,11 @@ If your MCP server runs only over stdio (e.g. for local use with Claude Code, no
 - Fix: clear handlers and set `propagate=True` on `werkzeug`, `gunicorn`, `gunicorn.error`, and `gunicorn.access` loggers inside `create_app()` (see Flask + Gunicorn section above)
 - Symptoms: application logs visible in `docker logs` or container stdout but missing from Grafana/Loki
 
+**Gunicorn startup, bind, and worker-timeout messages missing from Loki (app logs arrive fine):**
+- Expected, not a propagation bug. These come from gunicorn's master process, which never imports the app and so never runs `configure_logging()`.
+- Fix: none needed — read them with `docker logs <container>`. Do not move `configure_logging()` to module level (breaks the Loki handler's SSL session across `fork()`).
+- Symptoms: `logger="gunicorn.error"` shows `Worker exiting` records but never `Starting gunicorn` / `Listening at` / `Booting worker`; a container that fails to bind or boot looks silent in Loki.
+
 **Logs from multiprocessing.Process child processes not appearing in Loki:**
 - The parent's QueueListener thread and requests.Session do not survive `fork()`. The child inherits a dead handler — logs go into a queue that nobody reads. No errors are raised.
 - Fix: call `configure_logging()` at the top of the child process target function, before any logging (see Multiprocessing section above)
@@ -790,7 +808,9 @@ def create_app() -> Flask:
         dep_logger.handlers.clear()
         dep_logger.propagate = True
 
-    # ... register blueprints, configure Api, etc.
+    # ... register blueprints, configure Api, etc. — before or after the
+    # loop above; the order does not matter (see the note below the
+    # Flask + Gunicorn example).
 
     return app
 
