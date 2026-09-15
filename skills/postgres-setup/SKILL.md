@@ -103,6 +103,7 @@ import sys
 import argparse
 import psycopg2
 from dotenv import load_dotenv
+from psycopg2 import sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 
@@ -131,7 +132,10 @@ def main():
     {project_name}_user = os.environ.get('{PROJECT_NAME}_DB_USER', '{project_name}')
     {project_name}_password = os.environ.get('{PROJECT_NAME}_DB_PASSWORD', None)
 
-    if {project_name}_password is None:
+    # `not`, not `is None`: a set-but-empty value would otherwise create a
+    # role with an empty password, and the runtime get_database() (which
+    # uses `if not`) would reject what setup accepted.
+    if not {project_name}_password:
         print("Error: {PROJECT_NAME}_DB_PASSWORD environment variable is required")
         sys.exit(1)
 
@@ -148,25 +152,35 @@ def main():
         )
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
 
+        # Role and database names come from env vars and this connection is a
+        # superuser, so NEVER f-string them into SQL. sql.Identifier quotes
+        # them: hyphenated names (my-app) work, mixed case is preserved
+        # (unquoted MyApp is silently lowercased, so the app's login would
+        # target a different role), and a crafted value can't inject SQL.
+        db_ident = sql.Identifier({project_name}_db)
+        user_ident = sql.Identifier({project_name}_user)
+
         with conn.cursor() as cursor:
             cursor.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", ({project_name}_user,))
             if not cursor.fetchone():
                 print(f"Creating user '{{project_name}_user}'...")
-                cursor.execute(f"CREATE USER {{project_name}_user} WITH PASSWORD %s", ({project_name}_password,))
+                cursor.execute(sql.SQL("CREATE USER {} WITH PASSWORD %s").format(user_ident), ({project_name}_password,))
                 print(f"✓ User '{{project_name}_user}' created")
             else:
+                # Password is NOT updated for an existing role — see Step 5
+                # "Rotating the application password".
                 print(f"✓ User '{{project_name}_user}' already exists")
 
             cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", ({project_name}_db,))
             if not cursor.fetchone():
                 print(f"Creating database '{{project_name}_db}'...")
-                cursor.execute(f"CREATE DATABASE {{project_name}_db} OWNER {{project_name}_user}")
+                cursor.execute(sql.SQL("CREATE DATABASE {} OWNER {}").format(db_ident, user_ident))
                 print(f"✓ Database '{{project_name}_db}' created")
             else:
                 print(f"✓ Database '{{project_name}_db}' already exists")
 
             print("Setting permissions...")
-            cursor.execute(f"GRANT ALL PRIVILEGES ON DATABASE {{project_name}_db} TO {{project_name}_user}")
+            cursor.execute(sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {}").format(db_ident, user_ident))
             print(f"✓ Granted all privileges on database '{{project_name}_db}' to user '{{project_name}_user}'")
 
         conn.close()
@@ -255,6 +269,16 @@ python dev_scripts/setup_database.py --pg-password "your_postgres_password"
 # With custom superuser name
 python dev_scripts/setup_database.py --pg-password "your_postgres_password" --pg-user "admin"
 ```
+
+### Rotating the application password
+
+The setup script is idempotent: if the role already exists it leaves it untouched, **including its password**. After changing `{PROJECT_NAME}_DB_PASSWORD`, re-running setup prints "already exists" and then fails the schema login. Change the role's password explicitly (as a superuser) first:
+
+```sql
+ALTER USER "{project_name}" WITH PASSWORD 'new_password';
+```
+
+The script deliberately does not do this automatically — the role may be shared by other services, and silently changing its password would break them.
 
 ## Step 6: Make Script Executable
 
