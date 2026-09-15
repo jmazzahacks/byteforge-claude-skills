@@ -113,6 +113,34 @@ if __name__ == '__main__':
 - `{port_number}` → Actual port number (e.g., 5151)
 - `{feature}` → Feature name from user's response
 
+### Fail fast on missing database config (only if Step 1 Q3 = yes)
+
+If the project uses the database, validate its settings at the very top of `create_app()`. Add the import with the others at the top of `{project_name}.py`:
+
+```python
+from common import DatabaseConfig
+```
+
+and make this the first statement inside `create_app()`:
+
+```python
+    # Fail fast on a misconfigured deploy. Without this, a missing
+    # {PROJECT_NAME}_DB_PASSWORD boots "healthy" (/health never touches the DB)
+    # and only surfaces as 500s on the first DB request. Under gunicorn a
+    # ValueError here fails the worker boot, so the container exits and
+    # restart-count alerts fire.
+    #
+    # Validates env vars ONLY — it deliberately opens no connection. Do NOT
+    # replace it with service_manager.get_database(): the driver opens pool
+    # connections on construction, so a Postgres outage at boot would
+    # crash-loop the service instead of letting the resilient driver
+    # (postgres-setup Step 7) reconnect once Postgres is back. It would also
+    # make the Step 9b smoke test need a live database.
+    DatabaseConfig.from_env()
+```
+
+`common.py` is created in Step 6.
+
 ### Swagger UI enrichment (only if the user answered YES to Step 1 Q5)
 
 If the user opted in to a Swagger UI docs endpoint, add these three
@@ -359,9 +387,48 @@ and other shared resources.
 
 import os
 import logging
+from dataclasses import dataclass
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DatabaseConfig:
+    """Database connection settings, read from the same env vars postgres-setup provisions against."""
+    host: str
+    port: int
+    name: str
+    user: str
+    password: str
+
+    @classmethod
+    def from_env(cls) -> "DatabaseConfig":
+        """
+        Read and validate database settings from the environment.
+
+        Opens NO connection, so it is safe to call at startup even while
+        Postgres is down. create_app() calls it to fail fast on a
+        misconfigured deploy; get_database() calls it to build the driver.
+
+        Raises:
+            ValueError: If the password is missing/empty or the port is not an integer
+        """
+        # `{PROJECT_NAME}_DB_PORT` MUST be read here — the setup script
+        # (postgres-setup Step 4) provisions against it, and skipping it here
+        # silently dials 5432 (Docker-mapped 5433 or multi-instance hosts hit
+        # this). Ticket 881aa10a fix — five env vars, four surfaces, one invariant.
+        password = os.environ.get('{PROJECT_NAME}_DB_PASSWORD')
+        if not password:
+            raise ValueError("{PROJECT_NAME}_DB_PASSWORD environment variable required")
+
+        return cls(
+            host=os.environ.get('{PROJECT_NAME}_DB_HOST', 'localhost'),
+            port=int(os.environ.get('{PROJECT_NAME}_DB_PORT', '5432')),
+            name=os.environ.get('{PROJECT_NAME}_DB_NAME', '{project_name}'),
+            user=os.environ.get('{PROJECT_NAME}_DB_USER', '{project_name}'),
+            password=password,
+        )
 
 
 class ServiceManager:
@@ -401,21 +468,10 @@ class ServiceManager:
             # resilient implementation (pre-ping + retry; survives PG restart).
             from src.{project_name}.database import Database
 
-            # Get connection parameters from environment. `{PROJECT_NAME}_DB_PORT`
-            # MUST be read here — the setup script (postgres-setup Step 4)
-            # provisions against it, and skipping it here silently dials 5432
-            # (Docker-mapped 5433 or multi-instance hosts hit this). Ticket
-            # 881aa10a fix — five env vars, four surfaces, one invariant.
-            db_host = os.environ.get('{PROJECT_NAME}_DB_HOST', 'localhost')
-            db_port = int(os.environ.get('{PROJECT_NAME}_DB_PORT', '5432'))
-            db_name = os.environ.get('{PROJECT_NAME}_DB_NAME', '{project_name}')
-            db_user = os.environ.get('{PROJECT_NAME}_DB_USER', '{project_name}')
-            db_passwd = os.environ.get('{PROJECT_NAME}_DB_PASSWORD')
-
-            if not db_passwd:
-                raise ValueError("{PROJECT_NAME}_DB_PASSWORD environment variable required")
-
-            self._db = Database(db_host, db_name, db_user, db_passwd, db_port=db_port)
+            # Connection settings come from DatabaseConfig so startup
+            # validation (create_app) and the real driver read identical values.
+            config = DatabaseConfig.from_env()
+            self._db = Database(config.host, config.name, config.user, config.password, db_port=config.port)
             logger.info("Database connection initialized")
 
         return self._db
@@ -551,6 +607,29 @@ def test_create_app_registers_routes() -> None:
 - `{project_name}` → Snake case project name (e.g., "myapp")
 - `{feature}` → the first feature's snake case name (e.g., "tradable_token")
 
+**If the project uses the database** (Step 3's fail-fast check is present), use this version of `tests/test_app.py` instead. `create_app()` now requires the DB env vars, but still opens no connection, so a dummy password is enough — no Postgres needed:
+
+```python
+import pytest
+
+from {project_name} import create_app
+
+
+def test_create_app_registers_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('{PROJECT_NAME}_DB_PASSWORD', 'test-not-a-real-password')
+    app = create_app()
+    rules = [rule.rule for rule in app.url_map.iter_rules()]
+    assert '/api/{feature}' in rules
+
+
+def test_create_app_fails_fast_without_db_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('{PROJECT_NAME}_DB_PASSWORD', raising=False)
+    with pytest.raises(ValueError):
+        create_app()
+```
+
+Also replace `{PROJECT_NAME}` → uppercase project name (e.g., "MYAPP").
+
 ## Step 10: Document Usage
 
 Create or update README.md with:
@@ -599,9 +678,12 @@ Copy `example.env` to `.env` and configure:
 
 **Database (if applicable):**
 - `{PROJECT_NAME}_DB_HOST` - Database host (default: localhost)
+- `{PROJECT_NAME}_DB_PORT` - Database port (default: 5432)
 - `{PROJECT_NAME}_DB_NAME` - Database name (default: {project_name})
 - `{PROJECT_NAME}_DB_USER` - Database user (default: {project_name})
-- `{PROJECT_NAME}_DB_PASSWORD` - Database password (REQUIRED)
+- `{PROJECT_NAME}_DB_PASSWORD` - Database password (REQUIRED — the app refuses to start without it)
+
+The app checks that these are set when it starts, but does not connect to Postgres until the first request that needs it — so it starts even if Postgres is temporarily down, and fails immediately if the password is missing.
 
 ### API Documentation
 
