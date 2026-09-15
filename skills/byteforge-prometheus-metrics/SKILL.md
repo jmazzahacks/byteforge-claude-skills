@@ -128,6 +128,12 @@ def create_app() -> Flask:
     return app
 
 
+# ONLY if gunicorn targets `{app_file}:app` (the Step 5 entrypoint does).
+# If you launch with the factory form `{app_file}:create_app()` (the default in
+# flask-docker-deployment and flask-smorest-api), DELETE this line: gunicorn
+# then calls create_app() a second time in the same worker, and in
+# single-process mode (no PROMETHEUS_MULTIPROC_DIR) the request metrics
+# silently vanish from /metrics — 200 OK, no flask_http_request_* series.
 app = create_app()
 ```
 
@@ -136,7 +142,7 @@ app = create_app()
 - `{application_tag}` → the tag from Step 1, Q1
 - `{metrics_path}` → the scrape path from Step 1, Q5 (default `/metrics`)
 
-**Test suites that call `create_app()` more than once**: the single-process `PrometheusMetrics` branch registers its default metrics on the global `prometheus_client.REGISTRY`, so a second `create_app()` in the same process raises `ValueError: Duplicated timeseries in CollectorRegistry`. Build the app once per test session (session-scoped fixture), or pass `registry=CollectorRegistry()` to `PrometheusMetrics` in tests.
+**Test suites that call `create_app()` more than once**: the single-process `PrometheusMetrics` branch registers its default metrics on the global `prometheus_client.REGISTRY`. With `prometheus_flask_exporter` 0.23.x, a second `create_app()` in the same process does **not** raise — the second app's `/metrics` still returns 200, but it contains no `flask_http_request_*` series, so any test asserting on request metrics fails confusingly (or passes vacuously if it only checks the status code). Build the app once per test session (session-scoped fixture), or pass `registry=CollectorRegistry()` to `PrometheusMetrics` in tests. Same root cause as the module-level `app = create_app()` warning in the template above.
 
 **Why `GunicornInternalPrometheusMetrics` and NOT `GunicornPrometheusMetrics`**: the names are one word apart and behave completely differently. `GunicornPrometheusMetrics` discards any `path` argument and never registers a Flask route — it expects a **separate** metrics HTTP server started from a gunicorn `when_ready` hook. Used on its own, `/metrics` returns 404 while shards are silently written to disk, so everything looks healthy until the first scrape. `GunicornInternalPrometheusMetrics` registers `/metrics` on the app itself (same port as your API); keep it off the public internet at the nginx layer (see Step 9).
 
@@ -151,16 +157,23 @@ def when_ready(server):
 
 Replace `{metrics_port}` with a port distinct from the app's bind port. Without that `when_ready` hook this variant exposes nothing.
 
-**Why inside `create_app()` and not at module level**: gunicorn imports the module in each worker post-fork. Module-level initialization runs in the master process and breaks multiproc shard ownership. This matches the same fork-safety rule that [[byteforge-loki-logging]] documents for the Loki handler.
+**Why inside `create_app()` and not at module level**: keeping metrics setup in the factory keeps it tied to the app instance gunicorn actually serves. By default gunicorn imports your module inside each worker, post-fork. **Do not enable `preload_app = True` / `--preload`**: that imports the module — and any module-level `app = create_app()` — in the master process before `fork()`, which breaks multiproc shard ownership. This matches the same fork-safety rule that [[byteforge-loki-logging]] documents for the Loki handler.
 
 **Why `group_by='endpoint'`**: URL-path grouping explodes cardinality (one time series per unique URL — `/users/123`, `/users/456`, ...). Endpoint grouping uses Flask's route name (`get_user`), keeping cardinality bounded.
 
 ### What this gives you for free
 
 - `/metrics` endpoint registered on the app (`GunicornInternalPrometheusMetrics` / `PrometheusMetrics` only — see above)
-- `flask_http_request_total{method,status,endpoint}` — request counter
-- `flask_http_request_duration_seconds{method,status,endpoint}` — latency histogram (p50/p95/p99 via PromQL)
-- `flask_http_request_exceptions_total{method,endpoint}` — unhandled exception counter
+- `flask_http_request_total{method,status}` — request counter. **No `endpoint` label** — `group_by` is applied only to the duration histogram (exporter 0.23.x builds counter labels as `('method', 'status')`).
+- `flask_http_request_duration_seconds{method,status,endpoint}` — latency histogram (p50/p95/p99 via PromQL). Its `_count` series, `flask_http_request_duration_seconds_count{endpoint=...}`, is **the per-endpoint request counter** — use it for any per-endpoint rate query or check.
+- `flask_http_request_exceptions_total{method,status}` — unhandled exception counter (also no `endpoint` label)
+- Default process metrics: `process_resident_memory_bytes`, `process_cpu_seconds_total`, `process_start_time_seconds`, GC stats
+
+A per-endpoint query written against `flask_http_request_total{endpoint="..."}` matches nothing and returns empty — not an error — so it looks like "no traffic". Per-endpoint request rate:
+
+```promql
+sum by (endpoint) (rate(flask_http_request_duration_seconds_count{application="{application_tag}"}[5m]))
+```
 - Default process metrics: `process_resident_memory_bytes`, `process_cpu_seconds_total`, `process_start_time_seconds`, GC stats
 
 ### Note: raw `prometheus_client` path (only if you can't use `prometheus_flask_exporter`)
@@ -256,7 +269,10 @@ if [ ! -w "$PROMETHEUS_MULTIPROC_DIR" ]; then
     export PROMETHEUS_MULTIPROC_DIR
 fi
 
-exec gunicorn -c gunicorn_conf.py -b 0.0.0.0:{port} {app_module}:app "$@"
+# `exec` makes gunicorn PID 1 so it receives SIGTERM and drains gracefully.
+# No trailing "$@": extra gunicorn flags belong in gunicorn_conf.py, not in a
+# compose `command:` that would silently get appended to this command line.
+exec gunicorn -c gunicorn_conf.py -b 0.0.0.0:{port} {app_module}:app
 ```
 
 **CRITICAL**: Replace:
@@ -267,9 +283,12 @@ exec gunicorn -c gunicorn_conf.py -b 0.0.0.0:{port} {app_module}:app "$@"
 
 ```dockerfile
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Replaces the gunicorn CMD from flask-docker-deployment. Invoked via `sh` so
+# it does not depend on the file's exec bit surviving COPY/checkout.
+CMD ["sh", "/app/entrypoint.sh"]
 ```
+
+Use `CMD`, not `ENTRYPOINT`. With `ENTRYPOINT`, a compose `command:` is passed to the script as arguments; with `CMD`, a compose `command:` replaces the startup command outright — so **do not set `command:` for this service**, or the entrypoint (and the multiproc directory cleanup) is skipped. Put extra gunicorn settings in `gunicorn_conf.py`.
 
 `docker-compose.yaml` — mount tmpfs over the multiproc dir to avoid hitting the container's writable layer for every metric increment:
 
@@ -535,14 +554,18 @@ A starter dashboard is included at `references/starter-dashboard.json`. To insta
 2. Select the Prometheus datasource
 3. The dashboard is parameterized on `application` — pick `{application_tag}` from the dropdown
 
-It includes:
-- Request rate (req/s) by status class (2xx/4xx/5xx)
-- Latency p50 / p95 / p99
-- In-flight requests
-- Error rate (5xx / total)
-- Process memory + CPU
+It includes exactly these panels:
+- Request rate by status class (2xx/4xx/5xx) — `flask_http_request_total`
+- Request latency p50 / p95 / p99 — `flask_http_request_duration_seconds_bucket`
+- 5xx error rate (5xx / total) — `flask_http_request_total`
+- Total request rate (req/s) — `flask_http_request_total`
+- Process memory (resident + virtual)
+- Process CPU
 - Open file descriptors
-- Worker restart events (gaps in `process_start_time_seconds`)
+
+Not included, because `prometheus_flask_exporter` does not emit the data for them — add them yourself if you want them:
+- **In-flight requests** — the exporter has no in-progress metric. Declare your own `Gauge` with `multiprocess_mode='livesum'` (see Step 6, Pattern A) and wrap request handling with its `track_inprogress()`.
+- **Worker restarts** — e.g. `changes(process_start_time_seconds{application="{application_tag}"}[1h])`. Remember that series is per-worker (see the Multi-Worker Gunicorn Trap), which is exactly what makes restarts visible here.
 
 For the Redis-backed business metrics, add panels manually — the metric names are project-specific.
 
