@@ -42,7 +42,8 @@ A skill that provides a modern, standardized pattern for setting up Python libra
 - `pyproject.toml` - Modern Python project configuration with hatchling
 - `src/{package_name}/` - Source layout with explicit package discovery
 - `.gitignore` - Comprehensive Python artifact exclusions
-- `dev-requirements.txt` - Development dependencies (includes build/twine for PyPI only)
+- `requirements.txt` - Development dependencies (includes build/twine for PyPI only)
+- `tests/` - Starter smoke test; `pytest` scoped via `testpaths` so the root-level venv isn't collected
 - `build-publish.sh` - Automated build and publish script (PyPI only)
 - `README.md` - Basic project documentation
 

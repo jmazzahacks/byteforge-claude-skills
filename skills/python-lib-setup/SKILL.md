@@ -21,10 +21,11 @@ Use this skill when:
 1. **`pyproject.toml`** - Modern Python project configuration
 2. **`src/{package_name}/`** - Source layout with package structure
 3. **`.gitignore`** - Comprehensive Python gitignore
-4. **`dev-requirements.txt`** - Development dependencies (includes build/twine for PyPI only)
+4. **`requirements.txt`** - Development dependencies (includes build/twine for PyPI only)
 5. **`build-publish.sh`** - Automated build and publish script (PyPI only)
 6. **`LICENSE`** - License file (Proprietary, MIT, or O'Saasy)
 7. **`README.md`** - Basic project documentation
+8. **`tests/`** - Test directory with a starter smoke test (pytest is scoped to it via `pyproject.toml`)
 
 ## Step 1: Gather Project Information
 
@@ -67,6 +68,7 @@ Create these directories if they don't exist:
 {project_root}/
 ├── src/
 │   └── {package_name}/
+├── tests/
 └── (other files at root)
 ```
 
@@ -116,6 +118,13 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/{package_name}"]
 
+[tool.pytest.ini_options]
+# REQUIRED. The venv lives at the project root (bin/, lib/, include/), so an
+# unconstrained `pytest` collects the venv's own site-packages tests (e.g.
+# mypy's vendored mypyc tests) and dies on third-party collection errors
+# before running a single project test. Restrict collection to our tests.
+testpaths = ["tests"]
+
 [project.urls]
 Homepage = "https://github.com/{github_username}/{project-name}"
 Issues = "https://github.com/{github_username}/{project-name}/issues"
@@ -150,17 +159,17 @@ Issues = "https://github.com/{github_username}/{project-name}/issues"
 ## Step 4: Create Comprehensive .gitignore
 
 **CRITICAL ordering — the virtual environment MUST be created before this
-`.gitignore` is written.** Since Python 3.13, `python -m venv <path>` writes a
+`.gitignore` is written.** Since Python 3.13, `python3 -m venv <path>` writes a
 `.gitignore` containing just `*` into the venv root. This skill's convention
-puts the venv at the project root (`python -m venv .` — see Step 6's
+puts the venv at the project root (`python3 -m venv .` — see Step 6's
 `build-publish.sh` and the README's Development / Setup section), so if
-`.gitignore` is written first and `python -m venv .` runs after, the
+`.gitignore` is written first and `python3 -m venv .` runs after, the
 project's `.gitignore` gets clobbered with `*`. `git init && git add .` then
 silently ignores every file in the package.
 
 Correct order:
 
-1. `python -m venv .` (create the venv at the project root; produces a
+1. `python3 -m venv .` (create the venv at the project root; produces a
    throwaway `.gitignore` with `*` inside)
 2. Write the `.gitignore` below — this overwrites the venv-generated one
    with the comprehensive pattern set, which itself already ignores the venv
@@ -301,9 +310,11 @@ dmypy.json
 .DS_Store
 ```
 
-## Step 5: Create dev-requirements.txt
+## Step 5: Create requirements.txt
 
-Create `dev-requirements.txt` with development dependencies.
+Create `requirements.txt` with development dependencies. A library's *runtime* dependencies live in `pyproject.toml`'s `dependencies` list, so `requirements.txt` here holds only the dev/build toolchain — the same filename `python-project-scaffold` uses, installed with `pip install --upgrade -r requirements.txt`.
+
+Use `python3 -m venv .` (not `python`) to create the venv: no venv is active yet, and bare `python` does not exist on stock macOS.
 
 **If distribution is PyPI:**
 ```
@@ -367,6 +378,15 @@ Create the basic package structure:
    # Export main classes/functions here for easier imports
    # from .module import ClassName, function_name
    # __all__ = ['ClassName', 'function_name']
+   ```
+
+3. **`tests/test_package.py`** - Starter smoke test, so `pytest` has something to collect (an empty `tests/` exits with code 5, "no tests ran"):
+   ```python
+   import {package_name}
+
+
+   def test_package_imports() -> None:
+       assert {package_name}.__version__
    ```
 
 ## Step 8: Create LICENSE File
@@ -470,7 +490,7 @@ import {package_name}
 
 ### Setup
 
-> **Note (Python 3.13+):** `python -m venv .` writes a `.gitignore` with `*`
+> **Note (Python 3.13+):** `python3 -m venv .` writes a `.gitignore` with `*`
 > into the venv root, which is the project root under this convention — so
 > re-creating the venv here **overwrites this project's `.gitignore`**. On
 > first setup that's fine (the repo's real `.gitignore` hasn't been created
@@ -479,14 +499,17 @@ import {package_name}
 
 ```bash
 # Create virtual environment
-python -m venv .
+python3 -m venv .
 
 # Activate virtual environment
 source bin/activate  # On Windows: bin\Scripts\activate
 
 # Install dependencies
-pip install -r dev-requirements.txt
+pip install --upgrade -r requirements.txt
 pip install -e .
+
+# Run tests
+pytest
 ```
 
 ### Building and Publishing
@@ -572,7 +595,7 @@ import {package_name}
 
 ### Setup
 
-> **Note (Python 3.13+):** `python -m venv .` writes a `.gitignore` with `*`
+> **Note (Python 3.13+):** `python3 -m venv .` writes a `.gitignore` with `*`
 > into the venv root, which is the project root under this convention — so
 > re-creating the venv here **overwrites this project's `.gitignore`**. On
 > first setup that's fine (the repo's real `.gitignore` hasn't been created
@@ -581,14 +604,17 @@ import {package_name}
 
 ```bash
 # Create virtual environment
-python -m venv .
+python3 -m venv .
 
 # Activate virtual environment
 source bin/activate  # On Windows: bin\Scripts\activate
 
 # Install dependencies
-pip install -r dev-requirements.txt
+pip install --upgrade -r requirements.txt
 pip install -e .
+
+# Run tests
+pytest
 ```
 
 > **Private git deps: install-time auth.** If `pyproject.toml` declares any
@@ -647,7 +673,7 @@ Inform the user of the next steps.
 1. **Install development dependencies**:
    ```bash
    source bin/activate
-   pip install -r dev-requirements.txt
+   pip install --upgrade -r requirements.txt
    ```
 
 2. **Install package in development mode**:
@@ -674,7 +700,7 @@ Inform the user of the next steps.
 1. **Install development dependencies**:
    ```bash
    source bin/activate
-   pip install -r dev-requirements.txt
+   pip install --upgrade -r requirements.txt
    ```
 
 2. **Install package in development mode**:
@@ -729,7 +755,7 @@ Claude:
 1. Creates src/awesome_lib/ directory structure
 2. Creates pyproject.toml with project metadata
 3. Creates comprehensive .gitignore
-4. Creates dev-requirements.txt with build tools and dev dependencies
+4. Creates requirements.txt with build tools and dev dependencies, plus tests/ with a smoke test
 5. Creates build-publish.sh script
 6. Creates LICENSE file (based on user's choice)
 7. Creates src/awesome_lib/__init__.py
@@ -747,7 +773,7 @@ Claude:
 1. Creates src/arcana_models/ directory structure
 2. Creates pyproject.toml with project metadata
 3. Creates comprehensive .gitignore
-4. Creates dev-requirements.txt (no build/twine)
+4. Creates requirements.txt (no build/twine), plus tests/ with a smoke test
 5. Creates LICENSE file (based on user's choice)
 6. Creates src/arcana_models/__init__.py
 7. Creates README.md with git+https:// install instructions and dependency reference patterns
