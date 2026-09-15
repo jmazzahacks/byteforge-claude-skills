@@ -148,7 +148,7 @@ dependencies = [
 ### {project}-backend (Flask API server)
 
 Set up in this order:
-1. **`flask-smorest-api`** — Flask app factory, blueprints, Marshmallow schemas
+1. **`flask-smorest-api`** — Flask app factory, blueprints, dataclass models, pytest smoke test
 2. **`postgres-setup`** — Database schema and setup script. **Run its Step 7** to scaffold the resilient `Database` driver at `src/{project_name}/database.py` — required for the Flask process to survive Postgres restarts; skipping it leads to a wedged pool on the next upstream PG restart.
 3. **`flask-docker-deployment`** — Dockerfile, build script, versioning
 4. **`byteforge-loki-logging`** — Structured logging to Grafana Loki

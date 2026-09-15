@@ -79,7 +79,7 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 **What it creates:**
 - Main application file with Flask app factory pattern and dotenv support
 - Blueprint architecture for modular endpoint organization
-- Marshmallow schema files for validation and documentation
+- Dataclass models with `to_dict` / `from_dict` for validation and serialization
 - Singleton manager for shared service instances
 - `example.env` with all required environment variables
 - CORS support and error handling
@@ -90,7 +90,7 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 - ✅ Automatic OpenAPI/Swagger documentation via flask-smorest
 - ✅ Blueprint architecture for modularity
 - ✅ MethodView classes for clean HTTP method handling
-- ✅ Type-safe request/response with Marshmallow schemas
+- ✅ Type-safe request/response with dataclass models (validation in `from_dict`)
 - ✅ Singleton manager pattern for database/service initialization
 - ✅ CORS support for frontend integration
 - ✅ Application factory pattern for testing
@@ -100,7 +100,7 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 
 **Design Principles:**
 1. **Blueprint Organization** - One blueprint per feature/resource
-2. **Schema-Driven** - Marshmallow schemas for validation and docs
+2. **Dataclass Models** - `to_dict` / `from_dict` dataclasses for validation and serialization
 3. **Singleton Manager** - Centralized service initialization
 4. **Application Factory** - `create_app()` pattern for flexibility
 5. **OpenAPI/Swagger** - Automatic documentation generation
@@ -512,7 +512,7 @@ Claude will recognize the flask-smorest-api skill and:
 1. Ask for project name, features/endpoints, database needs, and port
 2. Create `{project_name}.py` with Flask app factory
 3. Generate blueprint structure for each feature
-4. Create Marshmallow schema files for validation
+4. Create dataclass models with `to_dict` / `from_dict` validation
 5. Set up singleton manager for shared services
 6. Create `requirements.txt` with dependencies
 7. Document environment variables and startup instructions
