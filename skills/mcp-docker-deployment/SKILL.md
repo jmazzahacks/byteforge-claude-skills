@@ -288,8 +288,10 @@ if __name__ == "__main__":
 
 ## Step 4: Create build-publish.sh
 
+> **Transcribe this template exactly — do not rewrite the directory anchor or the argument loop using shell positional parameters (a dollar sign followed by a digit).** Claude Code substitutes dollar-digit tokens in a SKILL.md with the skill's invocation arguments, so such a template arrives corrupted: the `cd` anchor silently becomes a no-op and `--no-cache` never matches. `${BASH_SOURCE[0]}` and `"$@"` survive intact, which is why the script uses bash.
+
 ```bash
-#!/bin/sh
+#!/usr/bin/env bash
 # Build and publish MCP Docker image
 # Usage: ./build-publish.sh [--no-cache]
 
@@ -299,14 +301,16 @@ if __name__ == "__main__":
 # a stray VERSION in the parent, uses the parent as build context (which
 # in a multi-repo workspace can sweep sibling projects into the image),
 # and corrupts this project's version tracking.
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 REGISTRY="{registry_url}"
 
 NO_CACHE=""
-if [ "$1" = "--no-cache" ]; then
-    NO_CACHE="--no-cache"
-fi
+for arg in "$@"; do
+    if [ "$arg" = "--no-cache" ]; then
+        NO_CACHE="--no-cache"
+    fi
+done
 
 # Seed at 0, not 1: the version published is CURRENT+1, so seeding
 # at 1 makes the very first image :2 and leaves :1 permanently missing

@@ -123,7 +123,7 @@ A skill that provides a production-ready Docker deployment pattern for Flask app
 
 **Features:**
 - ✅ Python 3.13-slim base image
-- ✅ Production-grade Gunicorn WSGI server with configurable workers
+- ✅ Production-grade Gunicorn WSGI server with configurable workers, exec'd as PID 1 for graceful SIGTERM drain
 - ✅ Automated version management (auto-increment VERSION file)
 - ✅ Security hardening (non-root user, minimal base image)
 - ✅ Support for private Git dependencies via build args

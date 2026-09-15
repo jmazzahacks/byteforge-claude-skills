@@ -120,7 +120,13 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 # Port is read from PORT env var so it can be overridden at runtime
 # The gunicorn target is quoted so factory-pattern forms like
 # `create_app()` don't collide with dash's function-def syntax.
-CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
+#
+# `exec` is REQUIRED. Shell-form CMD runs under `/bin/sh -c`; without
+# `exec`, sh stays PID 1 and gunicorn is its child. `docker stop` signals
+# PID 1 only, dash does not forward SIGTERM, so gunicorn never drains
+# in-flight requests — they are severed when SIGKILL lands at the 10s
+# timeout. `exec` replaces sh with gunicorn and keeps $PORT expansion.
+CMD exec gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
 ```
 
 **CRITICAL Replacements:**
@@ -128,6 +134,8 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
 - `{workers}` → Number of workers (e.g., 4, or 1 for background jobs)
 - `{module}` → Python module name (e.g., flask_app)
 - `{app}` → App variable name (e.g., `app` or `create_app()`). **Keep the surrounding double quotes around `"{module}:{app}"`** — without them, dash parses the trailing `()` of `create_app()` as function-definition syntax and the container crash-loops with `Syntax error: "(" unexpected` before gunicorn ever starts.
+
+**Transitive private dependencies**: the secret mount makes `CR_PAT` available, but an inline `${CR_PAT}` URL in `requirements.txt` only authenticates the *top-level* clones. If a private lib declares another private lib token-free in its own `pyproject.toml` (which it must — see the global hatchling-metadata rule), pip clones that transitive dep anonymously and fails with git exit 128. Configure git `url.<token-url>.insteadOf` inside the same RUN so every clone in the graph is authenticated — the exact pattern is in the `uv-supply-chain-hardening` skill, Step 4.
 
 **If NO private dependencies**, remove these lines:
 ```dockerfile
@@ -164,16 +172,19 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
 
 # Quote the gunicorn target so factory forms like `create_app()`
-# don't collide with dash's function-def syntax.
-CMD gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
+# don't collide with dash's function-def syntax. `exec` makes gunicorn
+# PID 1 so it receives SIGTERM and drains gracefully (see full template).
+CMD exec gunicorn --bind 0.0.0.0:$PORT --workers {workers} "{module}:{app}"
 ```
 
 ## Step 3: Create build-publish.sh Script
 
-Create `build-publish.sh` in the project root:
+Create `build-publish.sh` in the project root.
+
+> **Transcribe this template exactly — do not "simplify" the directory anchor or the argument loop into shell positional parameters (a dollar sign followed by a digit).** Claude Code substitutes dollar-digit tokens in a SKILL.md with the skill's invocation arguments before the text reaches you, so a template written that way arrives corrupted: the `cd` anchor silently becomes a no-op and `--no-cache` never matches. `${BASH_SOURCE[0]}` and `"$@"` survive substitution intact, which is why the script uses bash.
 
 ```bash
-#!/bin/sh
+#!/usr/bin/env bash
 
 # Anchor to the script's directory so VERSION, Dockerfile, and `.` all
 # resolve to the project root — not the caller's cwd. Without this,
@@ -182,17 +193,19 @@ Create `build-publish.sh` in the project root:
 # (which in a multi-repo workspace can sweep sibling projects' venvs —
 # and their token-bearing pip metadata — into the image), and corrupts
 # this project's version tracking.
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 # VERSION file path
 VERSION_FILE="VERSION"
 
 # Parse command line arguments
 NO_CACHE=""
-if [ "$1" = "--no-cache" ]; then
-    NO_CACHE="--no-cache"
-    echo "Building with --no-cache flag"
-fi
+for arg in "$@"; do
+    if [ "$arg" = "--no-cache" ]; then
+        NO_CACHE="--no-cache"
+        echo "Building with --no-cache flag"
+    fi
+done
 
 # Seed at 0, not 1: the version published is CURRENT+1, so seeding at
 # 1 makes the very first image :2 and leaves :1 permanently missing
@@ -389,7 +402,7 @@ export CR_PAT=ghp_your_github_personal_access_token
 # Persist for future shells by adding the same line to ~/.zshrc (or ~/.bashrc).
 ```
 
-Skip this if the project has no private GitHub dependencies (no `--build-arg CR_PAT=$CR_PAT` in `build-publish.sh`).
+Skip this if the project has no private GitHub dependencies (no `--secret id=cr_pat,env=CR_PAT` in `build-publish.sh`).
 
 **Standard build** (increments version, uses cache):
 ```bash
@@ -432,6 +445,15 @@ docker run -p {port}:{port} {project}:test
 # Test the endpoint
 curl http://localhost:{port}/health
 ```
+
+**Verify gunicorn is PID 1** (catches a missing `exec` in the CMD):
+```bash
+docker run -d --name {project}-pid1 {project}:test
+docker exec {project}-pid1 cat /proc/1/comm   # want gunicorn/python, NOT "sh"
+docker stop {project}-pid1                    # should return in ~1-2s, not 10s
+docker rm {project}-pid1
+```
+If PID 1 is `sh`, SIGTERM is being swallowed and every rotation severs in-flight requests.
 
 ### Verify the Token Did Not Leak (private deps only)
 
@@ -494,7 +516,7 @@ This pattern follows these principles:
 ### Pattern 1: Standard Web API
 ```dockerfile
 ENV PORT=6100
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 "app:create_app()"
+CMD exec gunicorn --bind 0.0.0.0:$PORT --workers 4 "app:create_app()"
 ```
 - Multiple workers for concurrent requests
 - Factory pattern with `create_app()` — the target **must** be quoted; unquoted, dash reads the trailing `()` as function-definition syntax and the container crash-loops before gunicorn starts.
@@ -502,7 +524,7 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 "app:create_app()"
 ### Pattern 2: Background Job Worker
 ```dockerfile
 ENV PORT=5678
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 daemon:app
+CMD exec gunicorn --bind 0.0.0.0:$PORT --workers 1 daemon:app
 ```
 - Single worker to avoid job conflicts
 - Direct app instance
@@ -510,10 +532,12 @@ CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 daemon:app
 ### Pattern 3: High-Traffic API
 ```dockerfile
 ENV PORT=7200
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 8 --timeout 120 api:app
+CMD exec gunicorn --bind 0.0.0.0:$PORT --workers 8 --timeout 120 api:app
 ```
 - More workers for higher concurrency
 - Increased timeout for long-running requests
+
+All patterns keep `exec` — Docker signals PID 1 only, and without `exec` the shell is PID 1 and swallows SIGTERM. (The `byteforge-prometheus-metrics` entrypoint uses `exec gunicorn` for the same reason.)
 
 ## Integration with Other Skills
 
@@ -688,7 +712,7 @@ USER appuser
 ENV PORT=6100
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
-CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 app:app
+CMD exec gunicorn --bind 0.0.0.0:$PORT --workers 4 app:app
 ```
 
 This pattern:

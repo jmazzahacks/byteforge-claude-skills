@@ -153,15 +153,17 @@ location /mcp-<NAME> {
     set $mcp_upstream <UPSTREAM_CONTAINER>;
     set $mcp_port     <UPSTREAM_PORT>;
 
-    rewrite ^/mcp-<NAME>$       /mcp break;
-    rewrite ^/mcp-<NAME>/$      /mcp break;
-    rewrite ^/mcp-<NAME>/(.+)   /$1  break;
+    rewrite ^/mcp-<NAME>$                  /mcp break;
+    rewrite ^/mcp-<NAME>/$                 /mcp break;
+    rewrite ^/mcp-<NAME>/(?<mcp_path>.+)   /$mcp_path break;
 
     include /etc/nginx/conf.d/snippets/mcp-location.conf;
 }
 ```
 
 Three rewrites, not one, on purpose — see Trap 2.
+
+**Keep the named capture `(?<mcp_path>.+)` / `$mcp_path`.** Do not convert it to a numbered backreference (a dollar sign followed by a digit): Claude Code substitutes dollar-digit tokens in a SKILL.md with the skill's invocation arguments, so a numbered form reaches the reader as `/<some argument word>` and silently routes every sub-path to the wrong URL. The named form is equivalent nginx and survives substitution.
 
 If this is the **first MCP being added to a brand-new umbrella vhost** (or a brownfield vhost that somehow lacks the bypass), also ensure the `.well-known` bypass is present, somewhere before the per-MCP `location` block:
 
@@ -237,9 +239,9 @@ server {
         set $mcp_upstream <UPSTREAM_CONTAINER>;
         set $mcp_port     <UPSTREAM_PORT>;
 
-        rewrite ^/mcp-<NAME>$       /mcp break;
-        rewrite ^/mcp-<NAME>/$      /mcp break;
-        rewrite ^/mcp-<NAME>/(.+)   /$1  break;
+        rewrite ^/mcp-<NAME>$                  /mcp break;
+        rewrite ^/mcp-<NAME>/$                 /mcp break;
+        rewrite ^/mcp-<NAME>/(?<mcp_path>.+)   /$mcp_path break;
 
         include /etc/nginx/conf.d/snippets/mcp-location.conf;
     }
@@ -264,7 +266,7 @@ location /mcp-foo {
 
     rewrite ^/mcp-foo$ /mcp break;
     rewrite ^/mcp-foo/$ /mcp break;
-    rewrite ^/mcp-foo/(.+) /$1 break;
+    rewrite ^/mcp-foo/(?<mcp_path>.+) /$mcp_path break;
 
     proxy_pass http://$upstream_foo_mcp:8000;
 
@@ -292,9 +294,9 @@ location /mcp-foo {
     set $mcp_upstream foo-container;
     set $mcp_port     8000;
 
-    rewrite ^/mcp-foo$       /mcp break;
-    rewrite ^/mcp-foo/$      /mcp break;
-    rewrite ^/mcp-foo/(.+)   /$1  break;
+    rewrite ^/mcp-foo$                  /mcp break;
+    rewrite ^/mcp-foo/$                 /mcp break;
+    rewrite ^/mcp-foo/(?<mcp_path>.+)   /$mcp_path break;
 
     include /etc/nginx/conf.d/snippets/mcp-location.conf;
 }

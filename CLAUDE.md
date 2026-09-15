@@ -119,6 +119,9 @@ Always use `{PROJECT_NAME}` and `{project_name}` substitution patterns in SKILL.
 ### Environment Variables
 Project-scoped naming across setup and runtime: `{PROJECT_NAME}_DB_HOST`, `{PROJECT_NAME}_DB_PORT`, `{PROJECT_NAME}_DB_NAME`, `{PROJECT_NAME}_DB_USER`, `{PROJECT_NAME}_DB_PASSWORD`. The setup script and the runtime driver / flask-smorest-api singleton MUST read the same vars — a mismatch silently provisions a DB the app can't authenticate to (v1.18.11 fix).
 
+### Never put `$<digit>` in a SKILL.md
+Claude Code substitutes `$0`, `$1`, … in SKILL.md bodies with the skill's invocation arguments before the text reaches the model — including inside code blocks. Shell positional params and nginx/regex backreferences arrive silently corrupted (ticket 6cf8f5bc: `cd "$(dirname "$0")"` became `cd "$(dirname "Dockerize")"`). Use substitution-safe equivalents: `${BASH_SOURCE[0]}` (bash), `for arg in "$@"`, nginx named captures `(?<name>...)` / `$name`. Files under `references/` are read with the Read tool and are not substituted. Guard before every commit: `grep -n '\$[0-9]' skills/*/SKILL.md` must return nothing.
+
 ### Database Conventions
 - Unix timestamps (BIGINT) for all date/time storage
 - UUID primary keys with `gen_random_uuid()`
