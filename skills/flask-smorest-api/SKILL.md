@@ -23,7 +23,8 @@ Use this skill when:
 3. **Data models** - Dataclasses with to_dict/from_dict methods and validation
 4. **Singleton manager pattern** - Centralized service/database initialization
 5. **CORS support** - Cross-origin request handling
-6. **Requirements file** - All necessary dependencies
+6. **Requirements files** - Runtime dependencies (`requirements.txt`) and dev/test tools (`dev-requirements.txt`)
+7. **`pytest.ini` + `tests/`** - pytest scoped to `tests/` with the project root importable, plus a DB-free smoke test
 
 ## Step 1: Gather Project Information
 
@@ -57,6 +58,9 @@ Create these directories if they don't exist:
 ├── models/              # Dataclass models with to_dict/from_dict
 │   ├── __init__.py
 │   └── {feature}.py
+├── tests/               # pytest tests (see Step 9b)
+│   └── test_app.py
+├── pytest.ini           # pytest config (see Step 9b)
 └── {project_name}.py    # Main application file
 ```
 
@@ -490,6 +494,12 @@ gunicorn
 psycopg2-binary
 ```
 
+Create `dev-requirements.txt` with test tooling. Keep it separate from `requirements.txt`: a service's `requirements.txt` is what gets installed into its Docker image, and test tools don't belong there (same split as the `uv-supply-chain-hardening` skill uses for apps):
+
+```txt
+pytest
+```
+
 ## Step 9: Create Blueprints __init__.py
 
 Create `blueprints/__init__.py`:
@@ -502,6 +512,45 @@ Each blueprint represents a distinct feature or resource endpoint.
 """
 ```
 
+## Step 9b: Create pytest.ini and a Smoke Test
+
+### File: `pytest.ini`
+
+```ini
+[pytest]
+# REQUIRED. The venv lives at the project root (bin/, lib/, include/), so a
+# bare `pytest` otherwise collects the venv's own site-packages tests and dies
+# on third-party collection errors before running a single project test.
+testpaths = tests
+# REQUIRED. The app modules ({project_name}.py, blueprints/, models/, common.py)
+# live at the project root, not in an installed package. pytest's default
+# import mode puts tests/ on sys.path, not the root, so without this line
+# `import {project_name}` fails with ModuleNotFoundError.
+pythonpath = .
+```
+
+Use `pytest.ini`, not `pyproject.toml`: a Flask service usually has no `pyproject.toml`, and creating one just for pytest config invites confusion with the library skills.
+
+### File: `tests/test_app.py`
+
+```python
+from {project_name} import create_app
+
+
+def test_create_app_registers_routes() -> None:
+    # Builds the app and checks wiring only — no requests are sent, so this
+    # stays DB-free even after the TODO handlers start querying Postgres.
+    # Keep create_app() itself free of live-DB requirements so this runs
+    # anywhere (CI, a fresh clone, a laptop without Postgres).
+    app = create_app()
+    rules = [rule.rule for rule in app.url_map.iter_rules()]
+    assert '/api/{feature}' in rules
+```
+
+**CRITICAL**: Replace:
+- `{project_name}` → Snake case project name (e.g., "myapp")
+- `{feature}` → the first feature's snake case name (e.g., "tradable_token")
+
 ## Step 10: Document Usage
 
 Create or update README.md with:
@@ -513,9 +562,22 @@ Create or update README.md with:
 cp example.env .env
 
 # Edit .env and fill in actual values
+# Create and activate the virtual environment (at the project root)
+python3 -m venv .
+source bin/activate
+
 # Then install dependencies
-pip install -r requirements.txt
+pip install --upgrade -r requirements.txt
+pip install --upgrade -r dev-requirements.txt
 ```
+
+### Running Tests
+
+```bash
+source bin/activate && pytest
+```
+
+`pytest.ini` scopes collection to `tests/` and puts the project root on the import path, so a bare `pytest` from the project root works.
 
 ### Running the Server
 
@@ -632,9 +694,10 @@ User: "Set up Python package for PyPI"
 3. Creates `blueprints/` directory with endpoint handlers:
    - `prices.py`, `tokens.py`, `portfolio.py`
 4. Creates `common.py` with ServiceManager singleton
-5. Creates `requirements.txt` with dependencies
-6. Documents environment variables needed
-7. Provides startup instructions
+5. Creates `requirements.txt` with dependencies and `dev-requirements.txt` with pytest
+6. Creates `pytest.ini` and `tests/test_app.py` (DB-free smoke test)
+7. Documents environment variables needed
+8. Provides startup and test instructions
 
 ## Optional: Docker Support
 

@@ -83,7 +83,8 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 - Singleton manager for shared service instances
 - `example.env` with all required environment variables
 - CORS support and error handling
-- `requirements.txt` with all dependencies (unpinned)
+- `requirements.txt` with all dependencies (unpinned), plus `dev-requirements.txt` with pytest
+- `pytest.ini` (`testpaths` + `pythonpath = .`) and a DB-free `create_app()` smoke test in `tests/`
 
 **Features:**
 - ✅ Automatic OpenAPI/Swagger documentation via flask-smorest
