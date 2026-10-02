@@ -168,6 +168,7 @@ A skill that integrates Grafana Loki logging into Python and Flask applications 
 - ✅ TLS via private CA certificate
 - ✅ `DEBUG_LOCAL` toggle for console-only local development
 - ✅ Multiprocessing-safe (handles fork() correctly)
+- ✅ MCP transport-aware logging: stderr for stdio, Loki integration for HTTP
 
 **Design Principles:**
 1. **Structured JSON** - Easier to query and filter in Loki

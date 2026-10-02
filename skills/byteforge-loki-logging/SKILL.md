@@ -53,6 +53,8 @@ pip install -r requirements.txt
 
 ## Step 3: Configure Logging in Application
 
+**For MCP servers, use the [MCP integration](#mcp-server-fastmcp--uvicorn) below instead of this module-level setup.** Select the transport before configuring logging: stdio requires stderr-only logging because stdout carries JSON-RPC.
+
 Add to the **top** of your main application file (e.g., `{app_file}.py`):
 
 ```python
@@ -210,7 +212,7 @@ The `byteforge-loki-logging` library provides:
 - Handle certificate validation
 - Worry about logging crashing your application
 
-**Just call `configure_logging()` and you're done!**
+Use the integration below for your server or worker type; MCP stdio uses stderr-only logging instead of `configure_logging()`.
 
 ## Integration with Other Skills
 
@@ -328,7 +330,7 @@ The only ordering that matters is the CRITICAL rule above: `configure_logging()`
 
 ### Multiprocessing / Forked Child Processes
 
-**The general rule: `configure_logging()` must be called in every process that logs.** The Loki handler uses a background `QueueListener` thread and a `requests.Session` with an SSL context — neither survives `fork()`. A child process inherits a copy of the logging config with a dead handler, and logs go into a queue that nobody reads. No errors are raised because the queue accepts writes silently.
+**For processes using Loki, call `configure_logging()` in each child that logs.** The Loki handler uses a background `QueueListener` thread and a `requests.Session` with an SSL context — neither survives `fork()`. A child process inherits a copy of the logging config with a dead handler, and logs go into a queue that nobody reads. No errors are raised because the queue accepts writes silently. MCP stdio servers and children sharing their stdout must use stderr-only logging instead; see the MCP integration below.
 
 This applies to:
 - `multiprocessing.Process` target functions
@@ -511,6 +513,7 @@ This is identical in shape to the Flask + Gunicorn case for the same reason (thi
 import asyncio
 import logging
 import os
+import sys
 
 import uvicorn
 from byteforge_loki_logging import configure_logging
@@ -522,26 +525,29 @@ mcp = FastMCP("my-mcp-server", host="0.0.0.0", port=8000, stateless_http=True)
 
 
 def main() -> None:
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport not in {"stdio", "streamable-http", "sse"}:
+        raise ValueError(f"Unsupported MCP_TRANSPORT: {transport!r}")
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+    if transport == "stdio":
+        # stdout belongs exclusively to MCP JSON-RPC. configure_logging()
+        # uses stdout in debug mode AND when Loki is unreachable, so skip it.
+        # force=True replaces existing root handlers, including stdout ones.
+        logging.basicConfig(level=log_level, stream=sys.stderr, force=True)
+        mcp.run(transport="stdio")
+        return
+
     # configure_logging() in main() runs BEFORE uvicorn boots. uvicorn doesn't
     # fork by default — unlike gunicorn — so the QueueListener + SSL session
     # the Loki handler creates are inherited safely by uvicorn's own coroutines.
     # No post-fork concerns here; this is the right place.
     debug_mode = os.environ.get("DEBUG_LOCAL", "true").lower() == "true"
-    log_level = os.environ.get("LOG_LEVEL", "INFO")
     configure_logging(
         application_tag="my-mcp-server",
         debug_local=debug_mode,
         local_level=log_level,
     )
-
-    transport = os.environ.get("MCP_TRANSPORT", "stdio")
-
-    if transport == "stdio":
-        # stdio has no uvicorn at all — JSON-RPC straight over stdin/stdout.
-        # The log_config concerns below don't apply. FastMCP's mcp.run() is
-        # correct for this case.
-        mcp.run(transport="stdio")
-        return
 
     # For streamable-http / sse, drive uvicorn directly so we can pass a
     # log_config that routes uvicorn.* loggers through the root logger
@@ -698,16 +704,27 @@ grep -E "(uvicorn|tool_invoked)" /tmp/srv.log
 
 #### Stdio transport
 
-If your MCP server runs only over stdio (e.g. for local use with Claude Code, no HTTP), none of the above applies — there is no uvicorn at all. `configure_logging()` in `main()` followed by `mcp.run(transport="stdio")` is the complete picture. Application-level logger calls still ship to Loki via the root handler.
+For stdio (e.g. local use with Claude Code), use the early-return branch above: configure Python logging to **stderr**, then call `mcp.run(transport="stdio")`. The [MCP transport specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio) reserves stdout for MCP messages.
+
+Do **not** call `configure_logging()` before this branch, at module import, or from a stdio tool. In byteforge-loki-logging 0.1.8, both `debug_local=True` and the unreachable-Loki fallback install a root `StreamHandler(sys.stdout)`. Setting `DEBUG_LOCAL=false` alone cannot protect the protocol stream. This stdio branch skips Loki regardless of `DEBUG_LOCAL`, needs no `LOKI_*` variables, and sends application logs to stderr rather than Loki.
+
+`force=True` replaces existing **root** handlers. Any explicitly attached handlers on named loggers must also use stderr or propagate to this root handler; remove stdout handlers and route diagnostic `print()` calls to stderr. Keep startup and imported modules free of stdout diagnostics as well.
+
+Verify with a stdio client: initialize, list tools, then invoke a tool that emits a log record. Capture stdout and stderr separately; every stdout line must be a valid MCP JSON-RPC message, with the tool's diagnostic log on stderr. Repeat with `DEBUG_LOCAL=true` and `false` and no Loki variables to cover both modes.
 
 #### Common pitfalls
 
+- Calling `configure_logging()` before selecting the MCP transport. Its local and fallback stdout handlers corrupt stdio JSON-RPC; take the stderr-only stdio branch first.
 - `mcp.run(transport="streamable-http", log_config=...)` — does NOT exist. FastMCP's `run()` accepts only `transport` and `mount_path` as of 2026-05-18. Passing `log_config=` raises `TypeError`. You must construct `uvicorn.Config` yourself.
 - `disable_existing_loggers: True` (the default!) silently wipes byteforge-loki-logging's root setup. Always set it to `False` in your uvicorn `log_config` dict.
 - Forgetting to set `handlers: []` on uvicorn loggers. If you leave handlers at their default (`["default"]`), uvicorn's own StreamHandler stays attached AND records propagate to root — you get duplicate output. Empty list + `propagate=True` is the right combo.
 - Not adding `ctx: Context` to tool signatures. Without it, `_caller_from()` can't read the request headers and your audit logs are missing per-caller identity. FastMCP strips `Context` from the LLM-visible tool schema, so the surface to clients is unchanged.
 
 ## Troubleshooting
+
+**Local stdio MCP fails to connect / JSON parse errors after adding Loki logging:**
+- `configure_logging()` installs a stdout handler in local mode or when Loki is unreachable, mixing log lines with MCP JSON-RPC.
+- Fix: use the MCP section's stderr-only stdio branch before any `configure_logging()` call. Check imported startup code, named logger handlers, and `print()` calls for stdout diagnostics too. Turning off `DEBUG_LOCAL` alone is insufficient.
 
 **Logs not appearing in Loki (production):**
 - Verify `DEBUG_LOCAL=false` is set
