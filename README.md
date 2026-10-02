@@ -433,7 +433,7 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 
 **Features:**
 - ✅ Three-layer defense: exact pins + per-artifact hashes + release-age gate
-- ✅ Pins to the **currently-installed** versions (via a `pip freeze` constraint), not "latest" — reproduces what you actually tested
+- ✅ Locks against a verified runtime baseline; compares development and production inventories to prevent silent downgrades
 - ✅ Rolling `exclude-newer = "7 days"` refuses freshly-uploaded (possibly compromised) releases on both compile and install
 - ✅ Optional first-party Git HEAD installs retain the registry build-dependency age gate; refreshed recompiles and `uv pip check` detect dependency drift
 - ✅ Pins the whole chain — app deps, the build backend, the uv binary (by `@sha256` digest), and Git deps (by commit SHA)
@@ -443,7 +443,7 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 - ✅ Composes with [[flask-docker-deployment]], [[mcp-docker-deployment]], and [[python-lib-setup]]
 
 **Design Principles:**
-1. **Reproduce what you tested** — pin to installed versions, not latest
+1. **Preserve the runtime baseline** — compare against production and approve version changes explicitly
 2. **Make tampering detectable** — hashes on every PyPI artifact
 3. **Buy time against fresh malware** — a rolling release-age gate
 4. **Pin the whole chain** — one floating link defeats the rest

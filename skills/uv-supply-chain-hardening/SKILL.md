@@ -1,6 +1,6 @@
 ---
 name: uv-supply-chain-hardening
-description: Harden a Python project's dependency supply chain by switching Docker builds from pip to uv, pinning every dependency to the currently-installed version with hashes, and adding a release-age gate so freshly-uploaded (possibly compromised) packages can't be pulled in. Use when locking down dependencies, defending against supply-chain attacks, or migrating a Dockerized Python build from pip to uv.
+description: Harden a Python project's dependency supply chain by switching Docker builds from pip to uv, locking dependencies with hashes against a verified runtime baseline, and adding a release-age gate so freshly-uploaded (possibly compromised) packages can't be pulled in. Use when locking down dependencies, defending against supply-chain attacks, or migrating a Dockerized Python build from pip to uv.
 ---
 
 # uv Supply-Chain Hardening
@@ -51,22 +51,57 @@ Nothing about the application code changes — this is purely the dependency pip
 
 ## Step 0: Establish the Baseline
 
-**IMPORTANT — pin to what is _installed_, not to "latest".** The whole point is
-reproducing the environment you've actually been running and testing against. If
-you just run `uv pip compile` with no constraints, it resolves to the newest
-versions allowed, which can jump you across several releases you never tested
-(and, worse, is exactly the surface a supply-chain attack rides in on).
+**Hardening preserves an agreed runtime baseline; it does not authorize version
+changes.** A development venv can be older than production. Freezing it blindly
+can silently downgrade the deployed application even when the compile preserves
+every local pin. Unconstrained resolution can instead introduce untested upgrades.
 
-First, confirm uv is available and capture the currently-installed versions:
+For an existing deployment, capture inventories from both the development venv
+and the **currently running production image**, using the interpreter that runs
+the application (including its venv path). Record the production image ID/digest,
+Python version, OS/libc, and architecture with the inventory. A mutable image tag
+or a newly rebuilt image is not evidence of what production currently runs.
 
 ```bash
 # Inside the project's activated virtualenv
 uv --version || pip install uv            # or: brew install uv / pipx install uv
-pip freeze > /tmp/installed-constraints.txt
+python -m pip freeze > /tmp/development-inventory.txt
+
+# Read-only inventory on the deployment host; replace both placeholders.
+docker inspect --format '{{.Image}}' {PRODUCTION_CONTAINER}
+docker exec {PRODUCTION_CONTAINER} {RUNTIME_PYTHON} -m pip freeze > /tmp/production-inventory.txt
 ```
 
-`/tmp/installed-constraints.txt` is the constraint set that anchors the compile to
-exactly what you have installed today.
+Check that inventory commands succeeded and produced the expected nonempty package
+lists before using them; a failed capture must not become empty constraints.
+
+If pip is absent, use the environment's existing `uv pip freeze --python
+{RUNTIME_PYTHON}` or obtain an equivalent distribution/version and VCS-source
+inventory from the deployment owner. Do not install tooling into production just
+to collect it. Keep inventories local and protect/redact credentials in VCS URLs.
+
+Compare development and production inventories by normalized distribution name
+(lowercase, treating runs of `-`, `_`, and `.` identically). Default the runtime
+constraints to production, not the laptop. Before compiling, identify every
+proposed runtime addition, removal, or version/source change. **Ask the user about
+any downgrade or correctness-sensitive package change unless that exact change
+is already authorized.** Include the production and proposed versions and the
+reason; a blanket request to harden dependencies is not approval to change them.
+For example, production `ta-lib==0.8.1` versus development `ta-lib==0.6.8` must not
+silently become a 0.6.8 runtime lock.
+
+Once the baseline is agreed, copy its inventory to
+`/tmp/installed-constraints.txt` (normally `/tmp/production-inventory.txt`). Apply
+only explicitly approved version changes to this working copy; keep the original
+production inventory unchanged for the post-compile comparison. Use the dev
+inventory separately for dev-only tooling, never to override runtime pins.
+
+If there is no deployment, use the tested environment the user identifies and
+record that choice. If production exists but its inventory is unavailable, ask
+for it or explicit approval of an alternative baseline; do not claim a local
+freeze preserves production. For multiple deployed platforms/versions, inventory
+each target and resolve differences explicitly rather than merging incompatible
+pins into one baseline.
 
 **Ask the user:**
 
@@ -79,9 +114,9 @@ exactly what you have installed today.
 
 3. **"Before we freeze, are there any of your own libraries you want to update
    first?"**
-   - Pinning captures a moment in time. If the user maintains internal libs with
-     pending fixes, pull those in and re-`pip install` _before_ freezing, so the
-     lock captures the intended versions.
+   - Treat these as explicit changes to the runtime baseline. Update and test them
+     in an isolated candidate environment, then recapture that inventory; keep
+     the original production snapshot for comparison.
 
 4. **"Should your own private libraries be pinned, or always track latest?"**
    - A common, legitimate stance: pin the **third-party** attack surface, but let
@@ -174,7 +209,8 @@ enable shell tracing or dump the environment/config while credentials are loaded
 
 ## Step 2: Compile the Locked, Hashed `requirements.txt`
 
-Compile from `requirements.in`, constrained to the installed versions, with hashes:
+Compile from `requirements.in`, constrained to the agreed runtime baseline, with
+hashes. Write a candidate first so review precedes replacement of the runtime lock:
 
 Apply the Step 3 release-age configuration **before this first compile** so its
 resolution is already gated. For private Git dependencies use the Step 1 auth
@@ -189,7 +225,7 @@ uv pip compile requirements.in \
   --generate-hashes \
   --python-version 3.13 --python-platform x86_64-unknown-linux-musl \
   -c /tmp/constraints.txt \
-  -o requirements.txt
+  -o requirements.candidate.txt
 ```
 
 - `--generate-hashes` → writes a SHA256 (often several, one per wheel/sdist) for
@@ -199,30 +235,69 @@ uv pip compile requirements.in \
   select different wheels/markers. Match the `FROM python:X.Y` in the Dockerfile.
 - `--python-platform` → the container OS/libc and architecture from Step 0; all
   examples below use x86_64 Alpine. Replace this consistently for the actual target.
-- `-c /tmp/constraints.txt` → **pins to the versions you already have installed**
+- `-c /tmp/constraints.txt` → **pins to the agreed runtime baseline from Step 0**
   rather than resolving to latest. This is the step people forget; without it the
   lock can leap forward across untested releases.
 - The output is the full transitive tree, every package pinned to `==` with hashes.
 
-**Verify the pin matched the baseline.** Diff the new pins against what you had:
+**Review before replacing the lock.** Compare the candidate registry pins with
+both the agreed constraints and the untouched production inventory. Normalize
+distribution names and check reads before diffing; process-substitution pipelines
+can hide read failures as empty output. Run these comparisons separately from the
+promotion command and inspect both diffs:
 
 ```bash
-# Sanity check: the compiled versions should match installed ones (modulo
-# package-name normalization like Flask -> flask, PyYAML -> pyyaml).
-diff <(grep -oE '^[a-zA-Z0-9_.-]+==[0-9][^ ]*' requirements.txt | sort) \
-     <(sort /tmp/installed-constraints.txt)
+registry_pins() {
+  python3 -c '
+from pathlib import Path
+import re
+import sys
+
+pins = []
+text = Path(sys.argv[1]).read_text()
+if not text.strip():
+    raise SystemExit("Empty inventory or candidate lock")
+for line in text.splitlines():
+    match = re.match(r"^([A-Za-z0-9_.-]+)==([0-9][^\s;]*)", line)
+    if match:
+        name = re.sub(r"[-_.]+", "-", match[1]).lower()
+        pins.append(name + "==" + match[2])
+print("\n".join(sorted(pins)))
+' "$@"
+}
+
+# Candidate must match the agreed baseline.
+registry_pins /tmp/installed-constraints.txt > /tmp/baseline-pins.txt || exit 1
+registry_pins requirements.candidate.txt > /tmp/candidate-pins.txt || exit 1
+comparison_status=0
+diff -u /tmp/baseline-pins.txt /tmp/candidate-pins.txt || comparison_status=1
+# For existing deployments, also expose changes relative to actual production.
+registry_pins /tmp/production-inventory.txt > /tmp/production-pins.txt || exit 1
+diff -u /tmp/production-pins.txt /tmp/candidate-pins.txt || comparison_status=1
+test "$comparison_status" -eq 0
 ```
 
-You will see two classes of legitimate right-side-only lines:
-- **Name-case/separator normalization** (`Flask` → `flask`, `PyYAML` → `pyyaml`).
-- **Dev-only tooling in the same venv** — under the standard project layout,
-  `pytest` / `black` / `mypy` / `ruff` / etc. installed from `dev-requirements.txt`
-  will appear on the right side because they aren't in the runtime lock. Expected;
-  ignore. If dev tooling should also be hardened, see **Step 5c**.
+`diff` returns 1 when versions or package membership differ; that is a review
+finding, not a reason to skip the comparison. Stop on read/command errors. Skip
+only the production comparison when Step 0 established that no production
+inventory is available and an alternative baseline was authorized.
 
-What matters is a **runtime** package whose version actually _moved_ — that's what
-this process exists to make visible, and it should never happen on the initial
-constrained compile.
+Dev-only tooling in a selected non-production baseline (`pytest` / `black` /
+`mypy` / `ruff` / etc.) can be absent from the runtime lock. Confirm it is dev-only
+before excluding it from the comparison. If it should also be hardened, see
+**Step 5c**.
+
+Review every runtime addition, removal, and version change, including transitive
+packages. The registry diff omits VCS/editable/local-source entries: separately
+verify their intended source and commit, including any authorized Step 5b HEAD
+tracking. Stop for any unapproved difference; a successful resolver run is not
+approval. If a baseline pin cannot satisfy the target platform or age gate, keep
+the existing lock and agree a compatible change or wait; do not silently loosen
+constraints. Promote only after this review:
+
+```bash
+mv requirements.candidate.txt requirements.txt
+```
 
 > **Reproducible header — one extra compile pass.** The initial compile records
 > `-c /tmp/constraints.txt` in `requirements.txt`'s autogenerated header (and in
@@ -230,9 +305,12 @@ constrained compile.
 > from the repo — the file it points at doesn't exist. Fix it in one pass by
 > re-compiling with **no `-c` at all**; uv reads pins from the existing `-o
 > requirements.txt` (see the "preserves pins" property below), so resolution is
-> a no-op version-wise:
+> expected to preserve versions. Recheck the resulting version/source diff
+> against the reviewed candidate afterward; if it moved, restore the reviewed
+> lock and investigate before proceeding:
 >
 > ```bash
+> cp requirements.txt /tmp/reviewed-runtime-lock.txt
 > uv pip compile requirements.in \
 >   --generate-hashes --python-version 3.13 --python-platform x86_64-unknown-linux-musl \
 >   -o requirements.txt
@@ -468,11 +546,17 @@ with_private_git uv pip compile requirements.in \
   --python-platform x86_64-unknown-linux-musl \
   -c /tmp/constraints.txt \
   -o requirements.full.txt
-# Strip the first-party git lines → requirements.txt holds only the locked, hashed
+# Strip the first-party git lines → the candidate holds only the locked, hashed
 # third-party tree (their PyPI sub-deps stay; the private libs themselves do not).
-grep -vE '^(internal-core|internal-models) @ git\+' requirements.full.txt > requirements.txt
+grep -vE '^(internal-core|internal-models) @ git\+' requirements.full.txt > requirements.candidate.txt
 rm requirements.full.txt
 ```
+
+Apply Step 2's baseline/production diff and approval gate to this candidate, then
+promote it to `requirements.txt`. Validate the resolved first-party commits against
+the chosen pinned/HEAD policy separately; they are intentionally absent from the
+registry lock. The split flow retains its `-c` on subsequent recompiles; do not
+apply Step 2's unconstrained header-cleanup pass to it.
 
 **Routine recompile (later — adding one dep to `requirements.in`, or a periodic
 refresh, when you DON'T want a mass upgrade):**
@@ -808,7 +892,8 @@ These are the non-obvious things that cost time the first time through:
     rejected artifact's registry upload time and the effective cutoff; platform or
     Python incompatibility can look similar. Iterate: identify one gate-blocked
     pin, deliberately relax only that constraint in `/tmp/constraints.txt`, rerun
-    the same compile with the gate intact, and review the resulting downgrade.
+    the same compile with the gate intact into a candidate, and obtain approval
+    for any resulting downgrade before replacing the lock (Step 0/2).
     If A's own metadata insists on the too-new B, choose a compatible older A as
     well or wait for B to age in. Stop if no compatible eligible solution exists;
     do not automatically delete arbitrary pins or disable configuration. (Step 2.)
@@ -837,7 +922,8 @@ These are the non-obvious things that cost time the first time through:
 
 ## Design Principles
 
-1. **Reproduce what you tested** — pin to installed versions, not to latest.
+1. **Preserve the agreed runtime baseline** — compare against production and
+   explicitly approve version changes; a local freeze is not a production inventory.
 2. **Make tampering detectable** — hashes on every PyPI artifact.
 3. **Buy time against fresh malware** — a rolling release-age gate.
 4. **Pin the whole chain** — app deps, the build backend, the uv binary, and (via
