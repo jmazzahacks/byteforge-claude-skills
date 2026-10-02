@@ -257,6 +257,22 @@ A skill that containerizes Python MCP (Model Context Protocol) servers for remot
 
 ---
 
+### mcp-async-upgrade
+
+A skill for migrating an existing Python MCP server and its blocking SDK calls to native async I/O while preserving public tool contracts and synchronous SDK consumers.
+
+**What it provides:**
+- An audit, migration, validation, and release workflow for existing projects
+- Executable sync/async client and MCP examples with shared connection pools, per-request credentials, and cancellation-safe cleanup
+- Regression tests using real loopback HTTP and stateless ASGI requests
+- A benchmark comparing registered blocking and async tools at 1, 10, and 100 concurrent calls, with cold/warm results, heartbeat delay, identity checks, and pool waits
+
+**Key constraints:** preserve the installed framework's tested API, verify lifecycle behavior rather than assuming it, keep HTTP callers separate from stdio credentials, and distinguish local benchmark results from production capacity.
+
+[View full mcp-async-upgrade documentation →](./skills/mcp-async-upgrade/SKILL.md)
+
+---
+
 ### python-project-scaffold
 
 A skill that scaffolds a multi-repo Python workspace with shared models library, core library, Flask backend, and optional sub-projects.
