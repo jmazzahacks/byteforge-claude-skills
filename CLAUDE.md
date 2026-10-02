@@ -83,7 +83,7 @@ To test skills from this monorepo:
 
 1. **Install the marketplace**:
    ```
-   /plugin marketplace add /Users/jason/Sync/code/Personal/byteforge-claude-skills
+   /plugin marketplace add /home/jason/code/personal/byteforge-claude-skills
    ```
 
 2. **Install a specific skill**:
