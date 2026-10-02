@@ -1,6 +1,6 @@
 ---
 name: mcp-server-nginx-gatekeeper
-description: Use this skill when the user asks to "add a new MCP server behind nginx", "wire an MCP into the mcp.<domain> vhost", "expose an MCP container with gatekeeper auth", or otherwise needs to put a Streamable-HTTP MCP server (FastMCP or low-level SDK) behind nginx with ByteForge Gatekeeper auth (`auth_request /auth`). Emits a shared `conf.d/snippets/mcp-location.conf` (proxy/auth/streaming headers all in one place) and either a single new `location /mcp-<name>` block (brownfield) or the full umbrella vhost from scratch (greenfield). Includes the `.well-known` OAuth-discovery bypass that forces MCP clients like Claude Code to fall back to bearer-token auth, the `/mcp-<name>` → `/mcp` rewrite trio that makes path-prefix routing survive Streamable-HTTP's absolute upstream endpoint, and the buffering/timeout settings that keep streaming connections alive.
+description: Use this skill when the user asks to "add a new MCP server behind nginx", "wire an MCP into the mcp.{domain} vhost", "expose an MCP container with gatekeeper auth", or otherwise needs to put a Streamable-HTTP MCP server (FastMCP or low-level SDK) behind nginx with ByteForge Gatekeeper auth (`auth_request /auth`). Emits a shared `conf.d/snippets/mcp-location.conf` (proxy/auth/streaming headers all in one place) and either a single new `location /mcp-{name}` block (brownfield) or the full umbrella vhost from scratch (greenfield). Includes the `.well-known` OAuth-discovery bypass that forces MCP clients like Claude Code to fall back to bearer-token auth, the `/mcp-{name}` → `/mcp` rewrite trio that makes path-prefix routing survive Streamable-HTTP's absolute upstream endpoint, and the buffering/timeout settings that keep streaming connections alive.
 ---
 
 # MCP server nginx vhost with Gatekeeper auth
@@ -431,15 +431,18 @@ And update the plugin's umbrella `description` to mention "MCP server nginx vhos
 
 ---
 
-## Reporting Defects in This Skill
+## Reporting problems with this skill
 
-If you hit a bug, a stale instruction, or a step that doesn't work while running the **mcp-server-nginx-gatekeeper** skill, report it — don't just silently work around it. Future runs will hit the same thing.
+If you find a bug or stale instruction while using this skill:
 
-1. **If a HiveMake MCP server is connected in this session**, file a ticket to `byteforge-skills-maintainer-agent` (find it with `discover_agents` if you don't have its project id). Include:
-   - the skill name (`mcp-server-nginx-gatekeeper`) and the version from `.claude-plugin/plugin.json` if you know it
-   - the step or section that failed
-   - what you expected vs. what actually happened (exact error text if short)
-   - the workaround you used, if any
-2. **Otherwise**, tell the human driving the session, and/or open an issue at [github.com/jmazzahacks/byteforge-claude-skills](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+- If HiveMake is connected and `byteforge-skills-maintainer-agent` is available,
+  file a ticket with that agent. Use `discover_agents` to find its project ID.
+- Otherwise, open an issue at
+  [GitHub Issues](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+  If you cannot submit a report, give the human the details and this link.
 
-Fix the user's immediate problem first; report second.
+Include the skill name, plugin version if known, the instruction followed,
+expected and actual results, relevant errors/runtime versions, and any fix or
+workaround that worked. Omit credentials and private data.
+
+Address the user's immediate problem first; report the skill defect afterward.

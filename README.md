@@ -579,6 +579,19 @@ byteforge-claude-skills/
 └── README.md                    # This file
 ```
 
+## Reporting problems
+
+For a bug or stale instruction in a skill, open an issue at
+[GitHub Issues](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+Agents with HiveMake access can file a ticket with
+`byteforge-skills-maintainer-agent` when available; use `discover_agents` to find
+its project ID. If you cannot submit a report, give the human the details and link.
+
+Include the skill name, plugin version if known, instruction followed, expected
+and actual results, relevant errors/runtime versions, and any fix or workaround
+that worked. Omit credentials and private data. Every skill includes these
+reporting instructions.
+
 ## Contributing
 
 This collection is created and maintained by [@jmazzahacks](https://github.com/jmazzahacks).

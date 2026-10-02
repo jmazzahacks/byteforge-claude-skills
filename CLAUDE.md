@@ -62,6 +62,7 @@ When creating a new skill in this repository:
    - Should ask user questions before generating code
    - Should be idempotent and project-agnostic
    - Must include substitution instructions (e.g., `{PROJECT_NAME}` -> actual project name)
+   - Must include the standard reporting section described below
 
 3. **Update marketplace.json**: Add the new skill to `.claude-plugin/marketplace.json`:
    ```json
@@ -76,6 +77,23 @@ When creating a new skill in this repository:
      }
    }
    ```
+
+### Reporting problems convention
+
+Every `skills/*/SKILL.md`, including new skills, must end with a short
+`## Reporting problems with this skill` section. Keep the wording consistent
+with the existing skills: route reports to `byteforge-skills-maintainer-agent`
+when HiveMake is connected and the agent is available (discover its project ID
+with `discover_agents`); otherwise direct users to
+https://github.com/jmazzahacks/byteforge-claude-skills/issues. If submission is
+unavailable, give the human the report details and link.
+
+Request the skill name, plugin version if known, instruction followed, expected
+and actual results, relevant errors/runtime versions, and any successful fix or
+workaround. Keep credentials, private organization names, project codenames and
+other private data out of reports and public instructions. Address the user's
+immediate problem before reporting the skill defect. Check section coverage and
+both reporting destinations when adding or updating skills.
 
 ## Testing Skills Locally
 

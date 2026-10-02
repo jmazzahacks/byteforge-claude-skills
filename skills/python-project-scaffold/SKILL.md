@@ -345,15 +345,18 @@ After creating all files, tell the user:
 
 ---
 
-## Reporting Defects in This Skill
+## Reporting problems with this skill
 
-If you hit a bug, a stale instruction, or a step that doesn't work while running the **python-project-scaffold** skill, report it — don't just silently work around it. Future runs will hit the same thing.
+If you find a bug or stale instruction while using this skill:
 
-1. **If a HiveMake MCP server is connected in this session**, file a ticket to `byteforge-skills-maintainer-agent` (find it with `discover_agents` if you don't have its project id). Include:
-   - the skill name (`python-project-scaffold`) and the version from `.claude-plugin/plugin.json` if you know it
-   - the step or section that failed
-   - what you expected vs. what actually happened (exact error text if short)
-   - the workaround you used, if any
-2. **Otherwise**, tell the human driving the session, and/or open an issue at [github.com/jmazzahacks/byteforge-claude-skills](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+- If HiveMake is connected and `byteforge-skills-maintainer-agent` is available,
+  file a ticket with that agent. Use `discover_agents` to find its project ID.
+- Otherwise, open an issue at
+  [GitHub Issues](https://github.com/jmazzahacks/byteforge-claude-skills/issues).
+  If you cannot submit a report, give the human the details and this link.
 
-Fix the user's immediate problem first; report second.
+Include the skill name, plugin version if known, the instruction followed,
+expected and actual results, relevant errors/runtime versions, and any fix or
+workaround that worked. Omit credentials and private data.
+
+Address the user's immediate problem first; report the skill defect afterward.
