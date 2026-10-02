@@ -229,6 +229,11 @@ constrained compile.
 
 Two additions to `pyproject.toml`.
 
+If the project already has `uv.toml`, put the age gate there as a top-level key
+instead: uv reads it in preference to `[tool.uv]` in the same directory's
+`pyproject.toml`. Preserve existing settings. See uv's
+[configuration precedence](https://docs.astral.sh/uv/concepts/configuration-files/).
+
 **(a) The release-age gate** under `[tool.uv]`:
 
 ```toml
@@ -425,7 +430,7 @@ rm requirements.full.txt
 refresh, when you DON'T want a mass upgrade):**
 ```bash
 uv pip compile requirements.in \
-  --override requirements-private.txt \
+  --override requirements-private.txt --refresh \
   --generate-hashes --no-annotate --python-version 3.13 \
   -c requirements.txt \
   -o requirements.full.txt
@@ -464,6 +469,9 @@ loses the "reproduces what you tested" guarantee.
 
 - `--override requirements-private.txt` forces uv to resolve those packages from
   your token-free URLs instead of the `{env:CR_PAT}@HEAD` ones in their metadata.
+- `--refresh` on routine recompiles refreshes cached first-party HEAD metadata
+  so changed dependency declarations are considered. It does not relax the
+  third-party constraints in `-c requirements.txt`; resolve conflicts deliberately.
 - **`-c requirements.txt` on the recompile is not optional in this flow.** The
   Step 2 "uv preserves pins on recompile" property does NOT apply here — uv reads
   pins from the `-o` output file, and Step 5b's output is a throwaway
@@ -493,24 +501,39 @@ loses the "reproduces what you tested" guarantee.
 > So if a first-party lib adds a new PyPI dep (or bumps one meaningfully) and you
 > merge that lib change WITHOUT rerunning the "routine recompile" above in the
 > backend repo, the next backend deploy will pull the lib's new HEAD, install it
-> with `--no-deps`, and blow up at import time with `ModuleNotFoundError`. This
+> with `--no-deps`, and fail `uv pip check` (or an import smoke test). This
 > is the specific cost of "always-latest first-party + pinned third-party" — the
 > two sides can silently diverge. Two options:
 > - **Convention:** any change-set that adds a runtime dep to a first-party lib
 >   also includes a `requirements.in` recompile in the backend, shipped together.
-> - **CI check:** in the backend, `docker build --no-cache` then run a smoke
->   `python -c "import <backend_pkg>"` in the image. A dep drift breaks this
->   before it reaches prod. Cheap and catches the class deterministically.
+> - **CI check:** make `uv pip check --system` fail the image build on missing or
+>   incompatible declared dependencies, then run a smoke
+>   `python -c "import <backend_pkg>"` in the built image for import-time failures.
 
-Dockerfile — two installs:
+Dockerfile — two installs, followed by a dependency consistency check. Run from
+the project working directory and copy the Step 3 configuration before installing
+(`uv.toml` below; use `pyproject.toml` instead if it holds `[tool.uv]` and no
+`uv.toml` takes precedence):
 ```dockerfile
-RUN uv pip install --system -r requirements.txt                                # pinned + hashed third-party
-RUN uv pip install --system --no-config --no-deps -r requirements-private.txt  # first-party at HEAD
+COPY uv.toml ./
+RUN uv pip install --system -r requirements.txt                      # pinned + hashed third-party
+RUN uv pip install --system --no-deps -r requirements-private.txt     # first-party at HEAD
+RUN uv pip check --system
 ```
-- `--no-deps` because every sub-dep is already installed + locked by step 1.
-- `--no-config` so `exclude-newer` (uv.toml) can't reject a first-party commit
-  pushed within the gate window — you *want* the newest first-party commit. Without
-  it, a lib commit younger than the gate fails the build.
+- `--no-deps` assumes all runtime dependencies are already supplied by the lock
+  and the private install list. It does not disable isolated build dependencies.
+- Keep configuration discovery enabled. `exclude-newer` applies to registry
+  packages, including dependencies resolved for isolated builds, **not Git commit
+  dates**. A new first-party commit can install while its registry build tools
+  remain age-gated. `--no-config` would discard that gate along with other
+  discovered settings. See uv's [resolution documentation](https://docs.astral.sh/uv/concepts/resolution/#reproducible-resolutions)
+  and [install options](https://docs.astral.sh/uv/reference/cli/#uv-pip-install).
+- If a registry build dependency is too new for the selected gate, retain the
+  gate and use a compatible eligible version or wait for it to age in; do not
+  bypass configuration to make the Git install pass.
+- `uv pip check --system` detects missing or incompatible declared runtime
+  dependencies after both installs. On failure, refresh/recompile the lock and
+  rebuild; do not remove the check or resolve fresh runtime deps during the build.
 
 **⚠️ The cache trap (bites every rebuild).** A `RUN uv pip install ... requirements-private.txt`
 layer is cached on the command string + the file's contents — neither changes when
@@ -661,9 +684,10 @@ These are the non-obvious things that cost time the first time through:
     matching `FROM python:X.Y`, or you lock the wrong wheels/markers. (Step 0/2.)
 13. **A raw `pip freeze` breaks `-c`.** Strip VCS/editable/`file://` lines (keep only
     `name==version`) before using it as a constraints file. (Step 2.)
-14. **`exclude-newer` gates installs too — including first-party HEAD.** A first-party
-    commit younger than the gate fails the build; run that install with `--no-config`.
-    (Step 5b.)
+14. **Keep the registry age gate during first-party Git installs.** `exclude-newer`
+    does not filter Git commits, but does filter registry dependencies needed by
+    their isolated builds. `--no-config` drops that protection; keep the Step 3
+    configuration available during both Docker installs. (Step 5b.)
 15. **`exclude-newer` collides with pin-to-installed on freshly-released packages.**
     If any package in `/tmp/installed-constraints.txt` was released *inside* the
     `exclude-newer` window (extremely common for a just-scaffolded project — you
@@ -687,8 +711,8 @@ These are the non-obvious things that cost time the first time through:
     first-party libs install `--no-deps` at HEAD, a first-party lib that adds a new
     runtime dep and merges without a backend recompile deploys, imports, and dies
     with `ModuleNotFoundError`. Convention: lib dep-change PR must include a
-    backend `requirements.in` recompile. CI catch: a smoke `import` in the built
-    image. (Step 5b.)
+    backend `requirements.in` recompile. CI catch: `uv pip check --system` after
+    both installs, plus a smoke `import` in the built image. (Step 5b.)
 18. **Dev tooling is outside the runtime hardening.** `pytest` / `black` / etc.
     installed from an unpinned `dev-requirements.txt` land on the same machines
     that hold `CR_PAT`. A hijacked pytest release has the same reach as a hijacked

@@ -432,6 +432,7 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 - ✅ Three-layer defense: exact pins + per-artifact hashes + release-age gate
 - ✅ Pins to the **currently-installed** versions (via a `pip freeze` constraint), not "latest" — reproduces what you actually tested
 - ✅ Rolling `exclude-newer = "7 days"` refuses freshly-uploaded (possibly compromised) releases on both compile and install
+- ✅ Optional first-party Git HEAD installs retain the registry build-dependency age gate; refreshed recompiles and `uv pip check` detect dependency drift
 - ✅ Pins the whole chain — app deps, the build backend, the uv binary (by `@sha256` digest), and Git deps (by commit SHA)
 - ✅ Keeps credentials out of artifacts — build-time `ARG`, never image `ENV`, with a `docker inspect` verification step
 - ✅ Documents the `--require-hashes` / unhashable-Git-dep tradeoff so it's a conscious decision
