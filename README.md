@@ -426,7 +426,7 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 - `requirements.in` — human-edited source-of-truth list of direct dependencies
 - `requirements.txt` — machine-generated, fully-pinned, `--generate-hashes` lock of the whole transitive tree
 - `pyproject.toml` — adds `[tool.uv] exclude-newer` (rolling release-age gate) and pins the build backend
-- `Dockerfile` — installs via a digest-pinned `uv` instead of pip; private-dep token becomes a build `ARG` only (never baked into the image)
+- `Dockerfile` — installs via a digest-pinned `uv` instead of pip; private-dep auth uses required BuildKit secrets and process-only Git configuration
 
 **Features:**
 - ✅ Three-layer defense: exact pins + per-artifact hashes + release-age gate
@@ -434,7 +434,8 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 - ✅ Rolling `exclude-newer = "7 days"` refuses freshly-uploaded (possibly compromised) releases on both compile and install
 - ✅ Optional first-party Git HEAD installs retain the registry build-dependency age gate; refreshed recompiles and `uv pip check` detect dependency drift
 - ✅ Pins the whole chain — app deps, the build backend, the uv binary (by `@sha256` digest), and Git deps (by commit SHA)
-- ✅ Keeps credentials out of artifacts — build-time `ARG`, never image `ENV`, with a `docker inspect` verification step
+- ✅ Checks secret values in build logs, image config/history and saved layers; scan errors block publishing
+- ✅ Includes transitive first-party libraries, migrates existing dev installs, and enforces fresh HEAD builds in publish scripts
 - ✅ Documents the `--require-hashes` / unhashable-Git-dep tradeoff so it's a conscious decision
 - ✅ Composes with [[flask-docker-deployment]], [[mcp-docker-deployment]], and [[python-lib-setup]]
 
