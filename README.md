@@ -169,6 +169,7 @@ A skill that integrates Grafana Loki logging into Python and Flask applications 
 - ✅ `DEBUG_LOCAL` toggle for console-only local development
 - ✅ Multiprocessing-safe (handles fork() correctly)
 - ✅ MCP transport-aware logging: stderr for stdio, Loki integration for HTTP
+- ✅ MCP examples require `mcp>=1.8,<2.0` for Streamable HTTP support
 
 **Design Principles:**
 1. **Structured JSON** - Easier to query and filter in Loki
@@ -236,6 +237,7 @@ A skill that containerizes Python MCP (Model Context Protocol) servers for remot
 
 **Features:**
 - ✅ Supports both FastMCP and low-level `mcp.server.Server` SDK
+- ✅ Requires `mcp>=1.8,<2.0` to match the Streamable HTTP / stateless examples
 - ✅ SSE and streamable-http transports (different endpoints, handled correctly)
 - ✅ Automated `VERSION` file management
 - ✅ Non-root container user

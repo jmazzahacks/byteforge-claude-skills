@@ -120,8 +120,12 @@ silently resolve into 2.x and crash-loop on
 # module paths this template uses. Unbounding without migrating the
 # server code will build green locally (against a pre-existing 1.x
 # venv) and crash-loop on the first --no-cache rebuild.
-mcp>=1.3,<2.0
+mcp>=1.8,<2.0
 ```
+
+The **1.8 minimum** is required for the default transport: [MCP SDK 1.8.0](https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.8.0) introduced Streamable HTTP, including FastMCP's `stateless_http` setting / `streamable_http_app()` and the low-level `StreamableHTTPSessionManager(..., stateless=True)` used below. Earlier 1.x versions cannot run these examples.
+
+For existing projects, update the dependency declaration and regenerate the lockfile with the project's existing package manager, then sync the environment and verify the installed `mcp` version. For a uv-managed project, preserve any extras (e.g. `mcp[cli]>=1.8,<2.0`) in `pyproject.toml`, run `uv lock --upgrade-package mcp`, and sync from the updated lock. Keep its existing uv-based Docker install flow; do not introduce a parallel `requirements.txt` dependency source. For hashed requirements locks, follow the deliberate-upgrade workflow in `uv-supply-chain-hardening` instead of hand-editing generated pins or hashes.
 
 `mcp` 1.x is in maintenance mode (security fixes only); the 2.x rewrite is
 far enough that migrating warrants a considered code change, not an
@@ -485,6 +489,8 @@ Connect to a remote MCP server in `.mcp.json`:
 Auth is handled at the nginx layer via Bearer token headers. The MCP server does not need to know about authentication.
 
 ## Troubleshooting
+
+**Unknown `streamable-http` transport / missing `streamable_http_app` or `streamable_http_manager`** - Check the installed `mcp` version. These APIs require `mcp>=1.8,<2.0`; an older lockfile or environment can retain an incompatible 1.x release. Update the declaration and lockfile, sync, and rebuild with the updated dependencies (see Step 2).
 
 **Container binds to 127.0.0.1 instead of 0.0.0.0 (FastMCP)** - FastMCP constructor defaults override env vars. Pass host/port explicitly in the FastMCP constructor (see Step 3, Path A).
 

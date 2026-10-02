@@ -493,8 +493,12 @@ Use this section when integrating with an MCP server built on `FastMCP` (the hig
 > the requirement in your project's `requirements.txt`:
 >
 > ```txt
-> mcp>=1.3,<2.0
+> mcp>=1.8,<2.0
 > ```
+>
+> The 1.8 minimum supplies Streamable HTTP, `stateless_http`, and
+> `streamable_http_app()` used below. Update existing dependency locks and
+> sync the environment as well as changing the declaration.
 >
 > See the `mcp-docker-deployment` skill's `requirements.txt` subsection
 > for the full rationale and the deliberate-migration path to 2.x.
