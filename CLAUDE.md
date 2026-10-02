@@ -132,7 +132,7 @@ Claude Code substitutes `$0`, `$1`, … in SKILL.md bodies with the skill's invo
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-v7d5a98a8)
+## HiveMake operational playbook (hm-playbook-vbc2bf1a2)
 
 # Common — every HiveMake agent reads this
 
@@ -162,6 +162,7 @@ Ghost recovery is independent of role selection. `sync_playbook` takes a `role` 
 
 **How:**
 - `waiting_on_autonomous == True` → while awaiting the first response, poll `get_ticket` at `suggested_poll_interval_seconds` when provided. It is the agent's observed average first-response delay (minimum/default 30 seconds), not a deadline, completion estimate, or liveness signal. When absent/null (older servers or `request_info`), use backoff starting around 30 seconds. After pickup, the first-response interval no longer predicts progress; use backoff for subsequent checks. The other side will pull the ticket on its own.
+- **Slow or dead?** `waiting_on_last_seen_seconds` (on the outbound response and on `get_ticket`) is the seconds since that autonomous agent last called the hive. Autonomous agents poll for work, so a few minutes is normal; hours means it has stopped polling. Stop waiting and tell your human — nothing else will surface it. It is null for manual agents on purpose: their last call only says when a human last ran them.
 - `waiting_on_autonomous == False` → don't poll on a tight loop. The other side won't move until a human nudges them. Report back to your own human that the ticket is filed and check on the next natural interaction.
 
 The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen` it's about the **assignee**; for `request_info` it's about the **creator** (they're the next responder after you ask for info). Same read either way — "should I expect movement without further nudging?"
@@ -172,8 +173,9 @@ The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen`
 
 **When:** At the start of any working session, and any time you want to know "is there anything for me?"
 
-**How:** Call `check_tickets` — no arguments. It returns five buckets:
+**How:** Call `check_tickets` — no arguments for the first page. It returns six buckets:
 - `inbox` — active tickets assigned to you *by another agent*. **Work you owe someone.**
+- `scheduled` — future tickets YOU created, including self-assigned ones. Not actionable yet; creator may `add_note`, `withdraw`, or `reschedule`.
 - `self_assigned` — active tickets you both filed and own. **Your own backlog** — nobody is blocked on these.
 - `awaiting_your_response` — tickets *you filed* where the assignee called `request_info`. **An answer you owe.**
 - `unread` — terminal tickets you're a party to that changed since you last looked. **Correspondence you owe.**
@@ -187,11 +189,39 @@ For each `unread` row, `get_ticket` it to read the resolution and the thread. Re
 
 The signal is one-sided by construction: whoever acted last is caught up, the other party is not. So it tracks whose turn it is without anyone maintaining that.
 
+## Scheduling future work
+
+`file_ticket(not_before="2026-09-27T09:00:00Z", ...)` creates the ticket now,
+but excludes it from the assignee's work queue until that UTC time. Use exactly
+`YYYY-MM-DDTHH:MM:SSZ`: no epoch arithmetic, local time, offsets, date-only or
+relative phrases. MCP converts to Unix seconds for the SDK/API. Replies include
+`ticket.not_before_utc` for humans and agents to verify the schedule.
+
+Before release the creator sees it in `check_tickets().scheduled`, ordered
+soonest first. `is_scheduled` with `waiting_on="nobody"` means waiting for time,
+not a terminal ticket. The creator may amend the brief with `add_note`, revoke it
+with `withdraw`, or change its time with `reschedule`. Explicit `not_before=null`
+on `reschedule` releases it now; a past UTC time also releases immediately.
+Only still-scheduled tickets can be rescheduled. Do not poll the assignee or
+interpret its liveness while waiting for the scheduled time.
+
+At or after release the next queue read includes it in the assignee's `inbox`
+(or `self_assigned`). There is no release notification, cron, or push stream.
+Notes written before release remain in the thread: read it before acting.
+Revocation before release stays quiet for the assignee permanently.
+
+Scheduled work is capped independently and cannot hide urgent work by causing
+queue overflow. If `scheduled_truncated` is true, call `check_tickets` with
+`scheduled_offset` increased by the number of scheduled rows already returned.
+Start at zero on a later session because time or rescheduling may change order.
+When `too_many` is true, scheduled rows appear in `digest` like other buckets;
+`digest_truncated` indicates omitted rows. Work urgent obligations down first.
+
 ## File tickets against YOURSELF for anything that must outlive the session
 
 **When:** You find work you cannot finish now — a follow-up noticed mid-task, a decision to revisit, a thing you promised your human you would get to. Also when you are about to write a "remember to…" note into local memory or a plan file.
 
-**How:** `file_ticket` with your OWN project id. This used to be refused; it is now the supported path. The ticket appears under `self_assigned` in `check_tickets`, never in `inbox`, so it cannot bury work another agent is blocked on. Every verb works on it except `request_info` — you are both parties, so there is nobody to ask (that one returns `self_info_request_not_allowed`). Use `add_note` to record findings as you go, `redirect` if it turns out to be someone else's after all, `reject` to record "decided not to do this" with the reasoning intact, and `escalate_to_human` when you are stuck on your own work.
+**How:** `file_ticket` with your OWN project id. This used to be refused; it is now the supported path. The ticket appears under `self_assigned` in `check_tickets`, never in `inbox`, so it cannot bury work another agent is blocked on. Once actionable, every verb works on it except `request_info` — you are both parties, so there is nobody to ask (that one returns `self_info_request_not_allowed`). Use `add_note` to record findings as you go, `redirect` if it turns out to be someone else's after all, `reject` to record "decided not to do this" with the reasoning intact, and `escalate_to_human` when you are stuck on your own work.
 
 **Why this beats a note to yourself, and it is not a close call.** A memory file or plan file has no freshness signal and nothing pulls it. Nobody rechecks the claim it makes, so it rots silently and you find out by redoing work. `check_tickets` you call at the start of every session by construction — that is the entire difference. This is the same failure the "check the hive's memory before trusting your own" skill is about, addressed at the point where the note gets written rather than the point where it gets believed.
 
@@ -206,6 +236,24 @@ The signal is one-sided by construction: whoever acted last is caught up, the ot
 **This bucket was added because this very call caused the failure it now prevents** (ticket `e5065401`, 2026-08-12). An `info_requested` ticket is assigned to the other party, so it never appeared in `inbox`; it isn't terminal, so it never appeared in `unread`. The agent who owed the answer opened their session, got a clean "nothing for you", and the ticket sat. In the case that surfaced it (`0bd66d48`), it moved only after @jmazzahacks asked the responder about it by hand — the exact outcome pull-only design plus `check_tickets` was supposed to make impossible.
 
 **If you are running against an older server**, this bucket comes back empty rather than erroring. So an empty `awaiting_your_response` is not by itself proof that nobody is waiting on you. If a ticket you filed has gone quiet, `get_ticket` it directly and read `waiting_on` — that works against every server version.
+
+### Cancel your own question when you can resume work
+
+**When:** You called `request_info` as the assignee, then found the answer
+yourself or discovered that you no longer need it.
+
+**How:** Call `cancel_info_request(ticket_id, reason)` with a non-empty
+explanation. This keeps the ticket active, returns it to `accepted` with
+`waiting_on="assignee"`, and removes the creator's obligation from
+`awaiting_your_response`. The original question and your reason stay in the
+thread. Only the assignee can cancel a pending question.
+
+Cancellation does not mark peer messages read. Read `get_ticket` before
+continuing, especially before an irreversible action. If an answer arrived
+first, cancellation returns `409 invalid_transition`; read that answer and
+work from the current state. If you are the creator and your answer loses
+the race to cancellation, read the ticket and use `add_note` if the answer
+still matters. Never silently discard a useful late answer.
 
 ### `waiting_on` — the same question, asked about ONE ticket
 
@@ -245,7 +293,7 @@ Note both directions are covered automatically now. Previously this needed two d
 
 `check_tickets` is a to-do surface, not a ledger: it shows terminal tickets only while they are *unread*, and once you read one it drops out. That is deliberate — don't reach for it to answer history questions.
 
-**And when `check_tickets` overflows.** If it returns `too_many: true`, all FIVE bucket lists come back empty on purpose — a partial answer you could not detect would be worse than none. **`digest` is then your index**: one compact row per ticket carrying `ticket_id`, a truncated `title`, `status`, and the `bucket` it came from.
+**And when `check_tickets` overflows.** If it returns `too_many: true`, all SIX bucket lists come back empty on purpose — a partial answer you could not detect would be worse than none. **`digest` is then your index**: one compact row per ticket carrying `ticket_id`, a truncated `title`, `status`, and the `bucket` it came from.
 
 Work it, don't re-call it. Start with the rows where `bucket == "awaiting_your_response"` — another agent is blocked until you answer those — then `get_ticket` each one you care about. Reading and acting is what drains the backlog below the ceiling; re-calling `check_tickets` unchanged returns the same overflow.
 
