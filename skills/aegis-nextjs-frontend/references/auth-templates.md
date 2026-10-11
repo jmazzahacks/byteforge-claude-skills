@@ -5,7 +5,8 @@
 - Replace `{aegis_api_url}` with the actual Aegis API URL for the target project (e.g., `https://aegis.example.com/api`)
 - Replace `{site_domain}` with the actual site domain for the target project (e.g., `myapp.example.com`)
 - The `useAuth.ts` file is identical across all projects; no substitution is needed
-- `byteforge-aegis-client-js` v2.0 supports refresh tokens with auto-refresh enabled by default
+- The templates target `byteforge-aegis-client-js` 4.2.0 (UUID IDs); refresh is managed explicitly
+- The legacy localStorage key names `user_id` and `site_id` store UUID strings. When migrating numeric-ID sessions, clear auth storage and log in again.
 - localStorage keys used: `auth_token`, `refresh_token`, `token_expires_at`, `user_id`, `site_id`, `site_name`
 
 ## Token Refresh Architecture
@@ -42,6 +43,7 @@ const AEGIS_API_URL = process.env.NEXT_PUBLIC_AEGIS_API_URL || '{aegis_api_url}'
 const SITE_DOMAIN = process.env.NEXT_PUBLIC_SITE_DOMAIN || '{site_domain}';
 
 let singleton: AuthClient | null = null;
+let sessionGeneration = 0;
 
 /**
  * Returns the singleton AuthClient, hydrating from localStorage on first call.
@@ -52,7 +54,7 @@ export function getAuthClient(): AuthClient {
   }
 
   const siteIdStr = typeof window !== 'undefined' ? localStorage.getItem('site_id') : null;
-  const siteId = siteIdStr ? parseInt(siteIdStr, 10) : undefined;
+  const siteId = siteIdStr || undefined;
 
   singleton = new AuthClient({
     apiUrl: AEGIS_API_URL,
@@ -78,11 +80,12 @@ export function getAuthClient(): AuthClient {
 /**
  * Called after login succeeds. Sets tokens on the singleton and stores everything in localStorage.
  */
-export function initAuthClientFromLogin(loginResponse: LoginResponse, siteId: number, siteName: string): void {
+export function initAuthClientFromLogin(loginResponse: LoginResponse, siteId: string, siteName: string): void {
+  sessionGeneration += 1;
   localStorage.setItem('auth_token', loginResponse.auth_token.token);
   localStorage.setItem('refresh_token', loginResponse.refresh_token.token);
   localStorage.setItem('token_expires_at', loginResponse.auth_token.expires_at.toString());
-  localStorage.setItem('user_id', loginResponse.auth_token.user_id.toString());
+  localStorage.setItem('user_id', loginResponse.auth_token.user_uuid);
   localStorage.setItem('site_id', siteId.toString());
   localStorage.setItem('site_name', siteName);
 
@@ -93,11 +96,13 @@ export function initAuthClientFromLogin(loginResponse: LoginResponse, siteId: nu
     autoRefresh: false,
   });
   singleton.setTokensFromLoginResponse(loginResponse);
+  window.dispatchEvent(new Event('aegis-auth-change'));
 }
 
 interface RefreshResult {
   success: boolean;
   expiresAt?: number;
+  superseded?: boolean;
 }
 
 /**
@@ -105,7 +110,24 @@ interface RefreshResult {
  */
 export async function refreshAuthTokens(): Promise<RefreshResult> {
   const client = getAuthClient();
-  const result: ApiResponse<RefreshTokenResponse> = await client.refreshAuthToken();
+  const generation = sessionGeneration;
+  const startingToken = localStorage.getItem('auth_token');
+  const startingRefreshToken = localStorage.getItem('refresh_token');
+  const isCurrentSession = () => generation === sessionGeneration &&
+    startingToken === localStorage.getItem('auth_token') &&
+    startingRefreshToken === localStorage.getItem('refresh_token');
+  let result: ApiResponse<RefreshTokenResponse>;
+  try {
+    result = await client.refreshAuthToken();
+  } catch {
+    return { success: false, superseded: !isCurrentSession() };
+  }
+  // Logout, replacement login, or another tab changed the session while this
+  // request was in flight. Never restore its tokens or log out the new user.
+  if (!isCurrentSession()) {
+    if (singleton === client) singleton = null;
+    return { success: false, superseded: true };
+  }
 
   if (!result.success) {
     return { success: false };
@@ -122,6 +144,7 @@ export async function refreshAuthTokens(): Promise<RefreshResult> {
     client.setRefreshToken(refresh_token.token);
   }
 
+  window.dispatchEvent(new Event('aegis-auth-change'));
   return { success: true, expiresAt: auth_token.expires_at };
 }
 
@@ -136,13 +159,14 @@ export function isTokenExpired(bufferSeconds: number = 300): boolean {
 
   const expiresAt = parseInt(expiresAtStr, 10);
   const nowSeconds = Math.floor(Date.now() / 1000);
-  return nowSeconds >= (expiresAt - bufferSeconds);
+  return !Number.isFinite(expiresAt) || nowSeconds >= (expiresAt - bufferSeconds);
 }
 
 /**
  * Clears the singleton tokens and all auth-related localStorage keys.
  */
 export function clearAuthClient(): void {
+  sessionGeneration += 1;
   if (singleton) {
     singleton.clearAllTokens();
   }
@@ -154,6 +178,7 @@ export function clearAuthClient(): void {
   localStorage.removeItem('user_id');
   localStorage.removeItem('site_id');
   localStorage.removeItem('site_name');
+  window.dispatchEvent(new Event('aegis-auth-change'));
 }
 
 export function getSiteDomain(): string {
@@ -222,10 +247,8 @@ export type { LoginResponse };
 ```typescript
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { clearAuthClient, isTokenExpired, refreshAuthTokens } from './browserClient';
-
-const REFRESH_CHECK_INTERVAL_MS = 60_000;
 
 interface AuthState {
   isAuthenticated: boolean;
@@ -238,128 +261,71 @@ interface AuthState {
   tokenExpiresAt: number | null;
 }
 
+const serverState: AuthState = {
+  isAuthenticated: false, isLoading: true, userId: null, siteId: null,
+  siteName: null, token: null, refreshToken: null, tokenExpiresAt: null,
+};
+let lastSerialized: string | undefined;
+let snapshot = serverState;
+
+function getSnapshot(): AuthState {
+  const values = ['auth_token', 'refresh_token', 'token_expires_at', 'user_id', 'site_id', 'site_name']
+    .map((key) => localStorage.getItem(key));
+  const serialized = JSON.stringify(values);
+  if (serialized !== lastSerialized) {
+    lastSerialized = serialized;
+    const [token, refreshToken, expiresAt, userId, siteId, siteName] = values;
+    snapshot = {
+      isAuthenticated: !!token, isLoading: false, token, refreshToken,
+      tokenExpiresAt: expiresAt ? Number(expiresAt) : null, userId, siteId, siteName,
+    };
+  }
+  return snapshot;
+}
+
+function subscribe(listener: () => void): () => void {
+  window.addEventListener('storage', listener);
+  window.addEventListener('aegis-auth-change', listener);
+  return () => {
+    window.removeEventListener('storage', listener);
+    window.removeEventListener('aegis-auth-change', listener);
+  };
+}
+
+let pendingRefresh: Promise<void> | null = null;
+function checkExpiry(): void {
+  if (!localStorage.getItem('auth_token') || !isTokenExpired() || pendingRefresh) return;
+  pendingRefresh = refreshAuthTokens()
+    .then((result) => { if (!result.success && !result.superseded) logout(); })
+    .catch(() => logout())
+    .finally(() => { pendingRefresh = null; });
+}
+
 export function useAuth(): AuthState {
-  const [state, setState] = useState<AuthState>({
-    isAuthenticated: false,
-    isLoading: true,
-    userId: null,
-    siteId: null,
-    siteName: null,
-    token: null,
-    refreshToken: null,
-    tokenExpiresAt: null,
-  });
-
-  const isRefreshing = useRef(false);
-
-  const attemptRefresh = useCallback(async (): Promise<boolean> => {
-    if (isRefreshing.current) {
-      return false;
-    }
-
-    isRefreshing.current = true;
-    try {
-      const result = await refreshAuthTokens();
-      if (result.success && result.expiresAt) {
-        const newToken = localStorage.getItem('auth_token');
-        const newRefreshToken = localStorage.getItem('refresh_token');
-        setState((prev) => ({
-          ...prev,
-          token: newToken,
-          refreshToken: newRefreshToken,
-          tokenExpiresAt: result.expiresAt ?? null,
-        }));
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    } finally {
-      isRefreshing.current = false;
-    }
-  }, []);
-
+  const state = useSyncExternalStore(subscribe, getSnapshot, () => serverState);
   useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    const refreshTokenVal = localStorage.getItem('refresh_token');
-    const tokenExpiresAtStr = localStorage.getItem('token_expires_at');
-    const userId = localStorage.getItem('user_id');
-    const siteId = localStorage.getItem('site_id');
-    const siteName = localStorage.getItem('site_name');
-
-    if (!token) {
-      setState({
-        isAuthenticated: false,
-        isLoading: false,
-        userId,
-        siteId,
-        siteName,
-        token: null,
-        refreshToken: null,
-        tokenExpiresAt: null,
-      });
-      return;
-    }
-
-    setState({
-      isAuthenticated: true,
-      isLoading: false,
-      userId,
-      siteId,
-      siteName,
-      token,
-      refreshToken: refreshTokenVal,
-      tokenExpiresAt: tokenExpiresAtStr ? parseInt(tokenExpiresAtStr, 10) : null,
-    });
-
-    // If token is expired or expiring soon, attempt refresh immediately
-    if (isTokenExpired()) {
-      attemptRefresh().then((success) => {
-        if (!success) {
-          logout();
-        }
-      });
-    }
-  }, [attemptRefresh]);
-
-  // Periodic refresh check
-  useEffect(() => {
-    if (!state.isAuthenticated) {
-      return;
-    }
-
-    const intervalId = setInterval(() => {
-      if (isTokenExpired()) {
-        attemptRefresh().then((success) => {
-          if (!success) {
-            logout();
-          }
-        });
-      }
-    }, REFRESH_CHECK_INTERVAL_MS);
-
-    return () => clearInterval(intervalId);
-  }, [state.isAuthenticated, attemptRefresh]);
-
+    if (!state.isAuthenticated) return;
+    checkExpiry();
+    const timer = setInterval(checkExpiry, 60_000);
+    return () => clearInterval(timer);
+  }, [state.isAuthenticated]);
   return state;
 }
 
 export function logout(): void {
   clearAuthClient();
-  window.location.href = '/';
 }
 ```
 
-### Note on clearNoteForgeApiKey
+### Additional application credentials
 
-If your project has additional API clients that cache tokens (e.g., a `noteforgeClient.ts` with `clearNoteForgeApiKey()`), import and call that in `logout()` as well:
+Logout clears the shared auth store; protected pages observe the change and use their locale-aware router to redirect. If the project has additional API clients that cache credentials, clear those too:
 
 ```typescript
-import { clearNoteForgeApiKey } from './noteforgeClient';
+import { clearApplicationCredentials } from './applicationClient';
 
 export function logout(): void {
   clearAuthClient();
-  clearNoteForgeApiKey();
-  window.location.href = '/';
+  clearApplicationCredentials();
 }
 ```

@@ -5,12 +5,11 @@ This file contains the complete `globals.css` template for the Aegis design syst
 ## globals.css
 
 ```css
-@import "tailwindcss";
-
 /* ============================================================
    Google Fonts
    ============================================================ */
 @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
+@import "tailwindcss";
 
 /* ============================================================
    CSS Custom Properties - Light Mode (Default)

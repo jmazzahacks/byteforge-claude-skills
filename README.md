@@ -195,20 +195,21 @@ A skill that scaffolds a complete Next.js 16 frontend integrated with ByteForge 
 - `useAuth` React hook with auto-logout on refresh failure
 - Server-side `/api/frontend/auth/*` proxy routes for Aegis's tenant-key-gated endpoints
 - Reverse-proxy-safe i18n middleware with Host-header fallback
-- Multi-stage Dockerfile with standalone output and `build-publish.sh`
+- Multi-stage Node 24 Dockerfile with BuildKit secrets, `.dockerignore`, and an anchored, failure-safe `build-publish.sh`
 - `/api/health` endpoint and Loki logging integration
-- Aegis user-verified webhook reference implementation
+- UUID-based Aegis 4.2.0 frontend and tenant-scoped backend auth helpers
+- Signed verification/deletion webhook receivers with retry handling and a required durable persistence adapter
 
 **Features:**
 - ✅ Next.js 16 App Router with i18n by default
 - ✅ Full ByteForge Aegis auth flow (register, login, verify, reset)
 - ✅ Server-side `X-Tenant-Api-Key` proxy (key never reaches the browser)
-- ✅ `/api/auth/me` bearer-token introspection helpers (TS + Flask)
+- ✅ `/api/auth/me` helpers (TS + Flask) with required site UUID validation and bounded positive/negative caches
 - ✅ Proactive token refresh with 5-minute buffer
 - ✅ Tailwind CSS v4 design system with light/dark mode
 - ✅ Production-ready Dockerfile with standalone output
 - ✅ Reverse-proxy header contract documented (`X-Forwarded-*`)
-- ✅ Webhook provisioning reference implementation
+- ✅ Webhook signature/event binding, site validation, deduplication and deletion-tombstone guidance
 - ✅ Loki structured logging out of the box
 
 **Design Principles:**

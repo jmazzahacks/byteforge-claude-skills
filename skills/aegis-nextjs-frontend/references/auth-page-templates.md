@@ -50,23 +50,9 @@ import { useRouter } from '@/i18n/navigation';
 import { Link } from '@/i18n/navigation';
 import { browserAuthProxy, getAuthClient, getSiteDomain, initAuthClientFromLogin } from '@/lib/browserClient';
 
-interface Site {
-  id: number;
-  name: string;
-  domain: string;
-}
+import type { Site } from 'byteforge-aegis-client-js';
 
 type LoginStatus = 'idle' | 'loading' | 'success' | 'error';
-
-function LoadingDots() {
-  return (
-    <span className="inline-flex gap-1">
-      <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-      <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-      <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-    </span>
-  );
-}
 
 function LoginContent() {
   const router = useRouter();
@@ -86,7 +72,7 @@ function LoginContent() {
       const result = await client.getSiteByDomain(siteDomain);
 
       if (result.success && result.data) {
-        setSite(result.data as Site);
+        setSite(result.data);
       } else if (!result.success) {
         setSiteError(result.error || t('siteNotFound'));
       }
@@ -106,7 +92,7 @@ function LoginContent() {
     const result = await browserAuthProxy.login(email, password);
 
     if (result.success && result.data) {
-      initAuthClientFromLogin(result.data, site.id, site.name);
+      initAuthClientFromLogin(result.data, site.uuid, site.name);
 
       setStatus('success');
       setMessage(t('accessGranted'));
@@ -352,21 +338,19 @@ function VerifyContent() {
   const t = useTranslations('Verify');
   const tCommon = useTranslations('Common');
 
-  const [status, setStatus] = useState<VerifyStatus>('checking');
-  const [message, setMessage] = useState('');
+  const [requestStatus, setStatus] = useState<VerifyStatus>('checking');
+  const [requestMessage, setMessage] = useState('');
   const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [validationError, setValidationError] = useState('');
 
   const token = searchParams.get('token');
+  const status = token ? requestStatus : 'error';
+  const message = token ? requestMessage : t('invalidToken');
 
   useEffect(() => {
-    if (!token) {
-      setStatus('error');
-      setMessage(t('invalidToken'));
-      return;
-    }
+    if (!token) return;
 
     const checkToken = async () => {
       const result = await browserAuthProxy.checkVerificationToken(token);
@@ -645,11 +629,7 @@ import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { browserAuthProxy, getAuthClient, getSiteDomain } from '@/lib/browserClient';
 
-interface Site {
-  id: number;
-  name: string;
-  domain: string;
-}
+import type { Site } from 'byteforge-aegis-client-js';
 
 type ForgotPasswordStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -671,7 +651,7 @@ function ForgotPasswordContent() {
       const result = await client.getSiteByDomain(siteDomain);
 
       if (result.success && result.data) {
-        setSite(result.data as Site);
+        setSite(result.data);
       } else if (!result.success) {
         setSiteError(result.error || tLogin('siteNotFound'));
       }
@@ -1161,17 +1141,15 @@ function ConfirmEmailChangeContent() {
   const searchParams = useSearchParams();
   const t = useTranslations('ConfirmEmailChange');
 
-  const [status, setStatus] = useState<ConfirmEmailStatus>('loading');
-  const [message, setMessage] = useState('');
+  const [requestStatus, setStatus] = useState<ConfirmEmailStatus>('loading');
+  const [requestMessage, setMessage] = useState('');
 
   const token = searchParams.get('token');
+  const status = token ? requestStatus : 'error';
+  const message = token ? requestMessage : t('invalidToken');
 
   useEffect(() => {
-    if (!token) {
-      setStatus('error');
-      setMessage(t('invalidToken'));
-      return;
-    }
+    if (!token) return;
 
     const confirmEmail = async () => {
       const client = getAuthClient();
@@ -1306,8 +1284,6 @@ This page does NOT need a Suspense wrapper since it has no search params or asyn
 
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
-import { useEffect, useState } from 'react';
-
 function SuccessCheckmark() {
   return (
     <div className="relative">
@@ -1341,18 +1317,17 @@ function SuccessCheckmark() {
 }
 
 function Confetti() {
-  const [particles, setParticles] = useState<Array<{ id: number; x: number; delay: number; color: string }>>([]);
-
-  useEffect(() => {
+  // Deterministic positions keep server rendering and hydration identical.
+  const particles = (() => {
     const colors = ['var(--amber-glow)', 'var(--amber-bright)', 'var(--success-green)', 'var(--foreground-muted)'];
     const newParticles = Array.from({ length: 20 }, (_, i) => ({
       id: i,
-      x: Math.random() * 100,
-      delay: Math.random() * 0.5,
-      color: colors[Math.floor(Math.random() * colors.length)],
+      x: (i * 37 + 11) % 100,
+      delay: ((i * 7) % 10) / 20,
+      color: colors[i % colors.length],
     }));
-    setParticles(newParticles);
-  }, []);
+    return newParticles;
+  })();
 
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">

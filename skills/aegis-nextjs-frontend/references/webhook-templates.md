@@ -1,370 +1,244 @@
-# Webhook Templates
+# Aegis Webhook Templates
 
-Reference documentation and implementation templates for Aegis `user.verified` webhook integration. This enables tenant sites to automatically provision users when they complete email verification on Aegis.
+Use these templates only when a tenant backend maintains local user records.
+Substitute `{aegis_site_uuid}` with the site's UUID and `{aegis_api_url}` with the
+actual deployment URL. Put configuration in the **receiving backend repository**,
+which may be separate from Next.js. Python examples target client 3.3.0 / models
+2.8.0; the JS frontend baseline is 4.2.0.
 
-## Webhook Contract
+## Contract
 
-### Trigger
-
-The `user.verified` event fires when a user clicks the email verification link and Aegis marks them as verified.
-
-### HTTP Request
-
-**Method**: `POST` to the tenant's configured `webhook_url`
-
-**Payload** (compact JSON, no extra whitespace):
+Aegis POSTs to the site's configured webhook_url. Both `user.verified` and
+`user.deleted` carry this signed body shape:
 
 ```json
-{"event_type":"user.verified","site_id":1,"user_id":42,"email":"user@example.com","aegis_role":"user","timestamp":1700000000}
+{"event_id":"01900000-0000-7000-8000-000000000001","event_type":"user.verified","site_uuid":"01900000-0000-7000-8000-000000000002","user_uuid":"01900000-0000-7000-8000-000000000003","email":"user@example.com","aegis_role":"user","timestamp":1700000000}
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `event_type` | string | Always `"user.verified"` for this event |
-| `site_id` | integer | The Aegis site ID |
-| `user_id` | integer | The Aegis user ID |
-| `email` | string | The user's email address |
-| `aegis_role` | string | The user's Aegis role (`"user"` or `"admin"`) |
-| `timestamp` | integer | Unix timestamp when the event occurred |
+IDs are UUID strings. `timestamp` is the event time in Unix seconds.
 
-### Headers
+| Header | Meaning |
+|---|---|
+| Content-Type | application/json |
+| X-Aegis-Signature | sha256= followed by a 64-character hex HMAC |
+| X-Aegis-Timestamp | Signing time for this delivery attempt, Unix seconds |
+| X-Aegis-Event | Must equal event_type inside the signed body |
 
-| Header | Value | Description |
-|--------|-------|-------------|
-| `Content-Type` | `application/json` | |
-| `X-Aegis-Signature` | `sha256=<hmac_hex_digest>` | HMAC-SHA256 signature for verification |
-| `X-Aegis-Event` | `user.verified` | Event type for routing |
-| `X-Aegis-Timestamp` | `<unix_timestamp>` | Signing timestamp (string) |
+HMAC-SHA256 covers `signing_timestamp + '.' + raw_body`, using the site's
+webhook secret. Verify the raw request bytes before reserialization. The event
+header is not itself signed: bind it to the signed body's event_type before
+routing. Enforce a 300-second window against the **header** timestamp, not the
+original event timestamp.
 
-### Signing Algorithm
+The current backend uses a durable outbox: **six total attempts** (initial plus
+five retries), with delays of 30, 120, 600, 3600, and 21600 seconds, roughly seven
+hours in total plus scheduler delay. The request timeout is five seconds. Failed
+attempts are retried by the deployment's pending-delivery sweep; verify that
+sweep is scheduled. Retries keep the same event_id and body but get a fresh
+signing timestamp/signature. Return 2xx after a durable commit, or for deliberate
+no-ops/ignored events. Return a failure for transient persistence errors so they
+can be retried. Do not rely on delivery order or exactly-once delivery.
 
-Aegis signs webhooks with HMAC-SHA256 over the string `"{timestamp}.{compact_json_body}"` using the site's `webhook_secret`:
+Source contract: `byteforge-aegis/src/services/webhook_service.py` and
+`byteforge-aegis-client-python/byteforge_aegis_client/webhooks.py`. Check the
+installed backend/client when adapting an older deployment.
+
+## Persistence contract (implement before enabling the receiver)
+
+Implement `apply_event(payload)` / `applyEvent(payload)` as one transaction:
+
+1. Validate site ownership and lock the identity `(site_uuid, user_uuid)`, using
+   the same lock in webhook processing and bearer-based provisioning.
+2. Deduplicate by `(site_uuid, event_id)` with a unique constraint. Persist the
+   processed-event record in the same transaction as the mutation.
+3. For `user.deleted`, persist a durable tombstone even if the local user does
+   not exist, and remove/disable the local account and its credentials. Keep the
+   tombstone after deletion; cascade deletion of the user must not remove it.
+4. For `user.verified`, return a no-op if tombstoned. Otherwise upsert by UUID.
+   Do not silently rebind an email already associated with another identity.
+   Link pre-existing email-only accounts only under an explicit, verified
+   account-linking policy for the application.
+5. Commit before acknowledging. Repeated deletion, duplicate verification, and
+   verification delivered after deletion all return 2xx without resurrection.
+
+Every local authorization/provisioning path must check the tombstone, including
+requests served from a cached Aegis `/me` response. In-process token-cache
+invalidation alone cannot protect other workers. Bearer provisioning must share
+the same identity lock and tombstone check as webhooks. Avoid logging raw bodies,
+email addresses, tokens, or secrets; event_id is enough for delivery tracing.
+
+## Flask receiver: app/blueprints/aegis_webhook.py
+
+Register `app.extensions['aegis_identity_store']` with an object implementing the
+transactional apply_event contract above. This receiver deliberately returns 503
+until persistence is installed; it never acknowledges an unimplemented mutation.
+Validate both env vars during app initialization as well.
 
 ```python
-message = f"{timestamp}.{payload_json}"
-signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
-# Sent as: X-Aegis-Signature: sha256={signature}
-```
+import json
+import os
+from uuid import UUID
 
-The payload JSON uses compact separators (`(',', ':')`), no extra whitespace.
-
-### Expected Response
-
-Any `2xx` status code is treated as success. The response body is logged but not parsed by Aegis.
-
-### Timeout and Retries
-
-- **Timeout**: 5 seconds
-- **Retries**: None — failed deliveries are logged to the `webhook_events` table on the Aegis side but not retried
-
-## Signature Verification
-
-To verify an incoming webhook:
-
-1. Extract `X-Aegis-Signature` and `X-Aegis-Timestamp` headers
-2. Recompute the HMAC-SHA256 over `"{X-Aegis-Timestamp}.{raw_request_body}"` using the shared secret
-3. Compare the computed digest with the received digest using constant-time comparison
-4. **Replay protection**: Reject if `abs(current_time - timestamp) > 300` seconds
-
-### Python (byteforge-aegis-client)
-
-The `byteforge-aegis-client-python` package exports a ready-made verifier:
-
-```python
+from flask import Blueprint, current_app, jsonify, request
 from byteforge_aegis_client import verify_webhook_signature
 
-is_valid = verify_webhook_signature(
-    secret=webhook_secret,           # str: the site's webhook secret
-    signature_header=signature,      # str: value of X-Aegis-Signature header
-    timestamp=timestamp,             # str: value of X-Aegis-Timestamp header
-    body=raw_body,                   # str: raw request body
-    tolerance_seconds=300,           # int: max age in seconds (default 300)
-)
+blp = Blueprint('aegis_webhook', __name__, url_prefix='/api/webhooks')
+
+
+@blp.post('/aegis')
+def receive_aegis():
+    secret = os.environ.get('AEGIS_WEBHOOK_SECRET', '')
+    try:
+        site_id = str(UUID(os.environ.get('AEGIS_SITE_ID', '').strip()))
+    except ValueError:
+        return jsonify({'error': 'Webhooks not configured'}), 503
+    if not secret:
+        return jsonify({'error': 'Webhooks not configured'}), 503
+    body = request.get_data(as_text=True)
+    event_type = request.headers.get('X-Aegis-Event', '')
+    if not event_type or not verify_webhook_signature(
+        secret=secret,
+        signature_header=request.headers.get('X-Aegis-Signature', ''),
+        timestamp=request.headers.get('X-Aegis-Timestamp', ''),
+        body=body, tolerance_seconds=300, event_type=event_type,
+    ):
+        return jsonify({'error': 'Invalid signature'}), 401
+    try:
+        payload = json.loads(body)
+        for field in ('event_id', 'site_uuid', 'user_uuid'):
+            payload[field] = str(UUID(payload[field]))
+        if not isinstance(payload['timestamp'], int) or isinstance(payload['timestamp'], bool):
+            raise ValueError('Invalid event timestamp')
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return jsonify({'error': 'Invalid payload'}), 400
+    if payload['site_uuid'] != site_id:
+        return jsonify({'error': 'Wrong site'}), 403
+    if event_type not in ('user.verified', 'user.deleted'):
+        return jsonify({'received': True, 'status': 'ignored'})
+    if event_type == 'user.verified' and (
+        not isinstance(payload.get('email'), str) or not payload['email']
+    ):
+        return jsonify({'error': 'Email required'}), 400
+    store = current_app.extensions.get('aegis_identity_store')
+    if store is None:
+        return jsonify({'error': 'Persistence not configured'}), 503
+    try:
+        store.apply_event(payload)
+    except Exception:
+        current_app.logger.error('Aegis event persistence failed: %s', payload['event_id'])
+        return jsonify({'error': 'Persistence unavailable'}), 503
+    return jsonify({'received': True})
 ```
 
-### TypeScript / Node.js (manual)
-
-No TypeScript client package exists yet. Use `crypto.createHmac` directly:
+## Node verifier: lib/aegisWebhook.ts
 
 ```typescript
-import crypto from 'crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
-function verifyWebhookSignature(
-  secret: string,
-  signatureHeader: string,
-  timestamp: string,
-  body: string,
-  toleranceSeconds: number = 300
-): boolean {
-  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
-    return false;
+export interface AegisEvent {
+  event_id: string;
+  event_type: string;
+  site_uuid: string;
+  user_uuid: string;
+  email?: string;
+  aegis_role?: string;
+  timestamp: number;
+}
+const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+
+export function verifyWebhook(
+  secret: string, signature: string, timestamp: string, body: string, eventType: string,
+): AegisEvent | null {
+  if (!secret || !eventType || !/^sha256=[0-9a-fA-F]{64}$/.test(signature) ||
+      !/^\d+$/.test(timestamp)) return null;
+  const signedAt = Number(timestamp);
+  if (!Number.isSafeInteger(signedAt) || Math.abs(Date.now() / 1000 - signedAt) > 300) return null;
+  const expected = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest();
+  const received = Buffer.from(signature.slice(7), 'hex');
+  if (received.length !== expected.length || !timingSafeEqual(expected, received)) return null;
+  try {
+    const data = JSON.parse(body);
+    if (!data || typeof data !== 'object' || Array.isArray(data) || data.event_type !== eventType ||
+        !Number.isSafeInteger(data.timestamp)) return null;
+    for (const key of ['event_id', 'site_uuid', 'user_uuid']) {
+      if (typeof data[key] !== 'string' || !UUID.test(data[key])) return null;
+      data[key] = data[key].toLowerCase();
+    }
+    if (eventType === 'user.verified' && (typeof data.email !== 'string' || !data.email)) return null;
+    return data as AegisEvent;
+  } catch {
+    return null;
   }
-
-  const receivedDigest = signatureHeader.slice(7);
-
-  // Check timestamp freshness
-  if (toleranceSeconds > 0) {
-    const webhookTime = parseInt(timestamp, 10);
-    if (isNaN(webhookTime)) return false;
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - webhookTime) > toleranceSeconds) return false;
-  }
-
-  // Compute expected signature
-  const message = `${timestamp}.${body}`;
-  const expectedDigest = crypto
-    .createHmac('sha256', secret)
-    .update(message)
-    .digest('hex');
-
-  return crypto.timingSafeEqual(
-    Buffer.from(expectedDigest),
-    Buffer.from(receivedDigest)
-  );
 }
 ```
 
-## Provisioning Pattern (Backend-Agnostic)
-
-When handling a `user.verified` webhook, use this idempotent 3-branch pattern:
-
-1. **User with this Aegis ID already exists** — Return success, no-op. This makes the handler safe to call multiple times for the same event.
-
-2. **User with this email exists but no Aegis ID** — Link the `aegis_id` to the existing record, return success. This handles cases where the user was created before Aegis integration was added.
-
-3. **New user** — Create a new record with the email, a name derived from the email prefix, any generated credentials (API keys, etc.), and the `aegis_id`. Return success.
-
-The exact database schema, ORM, and provisioning logic are project-specific. The skill provides the pattern, not the implementation.
-
-## Reference: Flask Implementation (NoteForge)
-
-This is the complete NoteForge webhook handler as a concrete example of the provisioning pattern.
-
-### Blueprint (`app/blueprints/aegis_webhook.py`)
-
-```python
-"""
-Aegis Webhook endpoint for user provisioning.
-
-Handles user.verified events from ByteForge Aegis to automatically
-create NoteForge user accounts when users complete email verification.
-"""
-
-import logging
-import os
-import secrets
-from flask import request
-from flask.views import MethodView
-from flask_smorest import Blueprint, abort
-from byteforge_aegis_client import verify_webhook_signature
-from noteforge_models import User
-from .aegis_webhook_schemas import AegisWebhookResponseSchema, AegisWebhookErrorSchema
-from ..common import service_manager
-
-logger = logging.getLogger(__name__)
-
-blp = Blueprint(
-    'aegis_webhook',
-    __name__,
-    url_prefix='/api/webhooks',
-    description='Aegis Webhook API for user provisioning'
-)
-
-
-@blp.route('/aegis')
-class AegisWebhookResource(MethodView):
-    @blp.response(200, AegisWebhookResponseSchema)
-    @blp.alt_response(400, schema=AegisWebhookErrorSchema)
-    @blp.alt_response(401, schema=AegisWebhookErrorSchema)
-    @blp.alt_response(500, schema=AegisWebhookErrorSchema)
-    def post(self):
-        """
-        Handle Aegis webhook events for user provisioning.
-
-        Processes user.verified events to create or link NoteForge users.
-        Idempotent: safe to call multiple times for the same user.
-        """
-        webhook_secret = os.environ.get('AEGIS_WEBHOOK_SECRET')
-        if not webhook_secret:
-            logger.error("AEGIS_WEBHOOK_SECRET not configured")
-            abort(500, message="Webhook secret not configured")
-
-        # Verify signature
-        signature = request.headers.get('X-Aegis-Signature', '')
-        timestamp = request.headers.get('X-Aegis-Timestamp', '')
-        body = request.get_data(as_text=True)
-
-        if not verify_webhook_signature(webhook_secret, signature, timestamp, body):
-            logger.warning("Invalid Aegis webhook signature")
-            abort(401, message="Invalid signature")
-
-        # Check event type
-        event_type = request.headers.get('X-Aegis-Event', '')
-        if event_type != 'user.verified':
-            return {
-                'received': True,
-                'message': f'Event type {event_type} not processed',
-            }
-
-        # Parse payload
-        payload = request.get_json()
-        if not payload:
-            abort(400, message="Invalid JSON payload")
-
-        aegis_user_id = payload.get('user_id')
-        email = payload.get('email')
-
-        if not aegis_user_id or not email:
-            abort(400, message="Missing required fields: user_id, email")
-
-        logger.info(f"Processing user.verified event for {email} (Aegis ID: {aegis_user_id})")
-
-        db = service_manager.get_database()
-
-        # Branch 1: User with this Aegis ID already exists (idempotent)
-        existing_user = db.get_user_by_aegis_id(aegis_user_id)
-        if existing_user:
-            logger.info(f"User already provisioned: {existing_user.email} (ID: {existing_user.id})")
-            return {
-                'received': True,
-                'message': f'User already provisioned',
-                'user_id': existing_user.id,
-            }
-
-        # Branch 2: User with this email exists but no Aegis ID (auto-link)
-        existing_by_email = db.get_user_by_email(email)
-        if existing_by_email:
-            logger.info(f"Linking existing user {email} (ID: {existing_by_email.id}) to Aegis ID {aegis_user_id}")
-            updated_user = db.update_user_aegis_id(existing_by_email.id, aegis_user_id)
-            return {
-                'received': True,
-                'message': f'Existing user linked to Aegis',
-                'user_id': updated_user.id,
-            }
-
-        # Branch 3: Create new user
-        name = email.split('@')[0]
-        api_key = secrets.token_hex(32)
-
-        new_user = User(
-            email=email,
-            name=name,
-            api_key=api_key,
-            aegis_id=aegis_user_id,
-        )
-
-        created_user = db.create_user(new_user)
-        if not created_user:
-            logger.error(f"Failed to create user for {email}")
-            abort(500, message="Failed to create user")
-
-        logger.info(f"Provisioned new user: {email} (ID: {created_user.id}, Aegis ID: {aegis_user_id})")
-        return {
-            'received': True,
-            'message': f'User provisioned',
-            'user_id': created_user.id,
-        }
-```
-
-### Response Schemas (`app/blueprints/aegis_webhook_schemas.py`)
-
-```python
-from marshmallow import Schema, fields
-
-
-class AegisWebhookResponseSchema(Schema):
-    """Response schema for successful Aegis webhook processing."""
-    received = fields.Boolean(required=True, metadata={'description': 'Whether the event was received'})
-    message = fields.String(required=True, metadata={'description': 'Status message'})
-    user_id = fields.Integer(load_default=None, metadata={'description': 'Tenant user ID if provisioned'})
-
-
-class AegisWebhookErrorSchema(Schema):
-    """Response schema for Aegis webhook errors."""
-    error = fields.String(required=True, metadata={'description': 'Error message'})
-```
-
-## Reference: Next.js API Route (Skeleton)
-
-A minimal starting point for handling Aegis webhooks in a Next.js API route. This is **not a complete implementation** — you will need to add your own database logic and user model.
-
-### `app/api/webhooks/aegis/route.ts`
+## Next.js receiver: app/api/webhooks/aegis/route.ts
 
 ```typescript
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
+import { verifyWebhook } from '@/lib/aegisWebhook';
+import { applyEvent } from '@/lib/aegisIdentityStore';
 
-const WEBHOOK_SECRET = process.env.AEGIS_WEBHOOK_SECRET || '';
-
-function verifySignature(secret: string, signatureHeader: string, timestamp: string, body: string): boolean {
-  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) return false;
-
-  const receivedDigest = signatureHeader.slice(7);
-  const now = Math.floor(Date.now() / 1000);
-  const webhookTime = parseInt(timestamp, 10);
-
-  if (isNaN(webhookTime) || Math.abs(now - webhookTime) > 300) return false;
-
-  const message = `${timestamp}.${body}`;
-  const expectedDigest = crypto.createHmac('sha256', secret).update(message).digest('hex');
-
-  return crypto.timingSafeEqual(Buffer.from(expectedDigest), Buffer.from(receivedDigest));
-}
+export const runtime = 'nodejs';
 
 export async function POST(request: NextRequest) {
-  if (!WEBHOOK_SECRET) {
-    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
+  const secret = process.env.AEGIS_WEBHOOK_SECRET;
+  const site = process.env.AEGIS_SITE_ID?.trim().toLowerCase();
+  if (!secret || !site || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(site)) {
+    return NextResponse.json({ error: 'Webhooks not configured' }, { status: 503 });
   }
-
-  const signature = request.headers.get('X-Aegis-Signature') || '';
-  const timestamp = request.headers.get('X-Aegis-Timestamp') || '';
-  const body = await request.text();
-
-  if (!verifySignature(WEBHOOK_SECRET, signature, timestamp, body)) {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+  const payload = verifyWebhook(
+    secret, request.headers.get('X-Aegis-Signature') ?? '',
+    request.headers.get('X-Aegis-Timestamp') ?? '', await request.text(),
+    request.headers.get('X-Aegis-Event') ?? '',
+  );
+  if (!payload) return NextResponse.json({ error: 'Invalid webhook' }, { status: 401 });
+  if (payload.site_uuid !== site) return NextResponse.json({ error: 'Wrong site' }, { status: 403 });
+  if (!['user.verified', 'user.deleted'].includes(payload.event_type)) {
+    return NextResponse.json({ received: true, status: 'ignored' });
   }
-
-  const eventType = request.headers.get('X-Aegis-Event') || '';
-  if (eventType !== 'user.verified') {
-    return NextResponse.json({ received: true, message: `Event ${eventType} not processed` });
+  try {
+    await applyEvent(payload); // Must commit the durable transaction before returning.
+  } catch {
+    return NextResponse.json({ error: 'Persistence unavailable' }, { status: 503 });
   }
-
-  const payload = JSON.parse(body);
-  const { user_id: aegisUserId, email } = payload;
-
-  if (!aegisUserId || !email) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-  }
-
-  // TODO: Implement the 3-branch provisioning pattern:
-  // 1. Check if user with this Aegis ID exists → return success (no-op)
-  // 2. Check if user with this email exists → link aegis_id, return success
-  // 3. Create new user with email, derived name, credentials → return success
-
-  return NextResponse.json({ received: true, message: 'User provisioned' });
+  return NextResponse.json({ received: true });
 }
 ```
 
-**Note**: This route uses Node.js `crypto` and must NOT run in Edge Runtime. Ensure your Next.js config does not force this route to the edge.
+### Required adapter: lib/aegisIdentityStore.ts
 
-## Environment Variables
+This scaffold is intentionally fail-closed. Replace the function with the
+application's transactional store before enabling webhooks.
 
-| Variable | Description |
-|----------|-------------|
-| `AEGIS_WEBHOOK_SECRET` | Shared secret for HMAC signature verification. Provided by Aegis when configuring the site's webhook URL. |
+```typescript
+import 'server-only';
+import type { AegisEvent } from './aegisWebhook';
 
-Add to `.env.example`:
+export async function applyEvent(event: AegisEvent): Promise<void> {
+  // Implement the persistence contract above using the project's DB layer.
+  void event;
+  throw new Error('Aegis identity persistence is not implemented');
+}
 ```
-AEGIS_WEBHOOK_SECRET=            # Webhook secret from Aegis admin (for user provisioning)
+
+## Configuration and verification
+
+In the receiver's .env.example:
+
+```dotenv
+AEGIS_WEBHOOK_SECRET=
+AEGIS_SITE_ID={aegis_site_uuid}
 ```
 
-## Aegis Admin Setup
+Configure webhook_url in the Aegis admin interface and put the site's returned
+webhook secret into this backend's runtime secret store. Keep both signing and
+tenant API secrets out of NEXT_PUBLIC_* variables and Docker build arguments.
 
-The webhook URL and secret are configured via the Aegis admin API:
-
-- **Create site**: `POST /api/sites` with `webhook_url` field
-- **Update site**: `PUT /api/sites/<id>` with `webhook_url` field
-
-When a `webhook_url` is provided, Aegis auto-generates a `webhook_secret` (64-character hex string) and returns it in the response. Store this secret in your backend's environment as `AEGIS_WEBHOOK_SECRET`.
-
-If you need to rotate the secret, update the site's `webhook_url` (even to the same value) — Aegis will generate a new secret.
+Before enabling delivery, test valid verification/deletion, wrong site, altered
+body, stale and malformed signatures, relabeled event header, duplicate event_id,
+deletion before verification, cached-token provisioning after deletion, concurrent
+verification/deletion, and rollback on storage failure. Unknown authenticated
+events should be acknowledged without mutating identities. Durable storage tests
+are application-specific and required; the fail-closed adapter alone is not a
+complete provisioning implementation.

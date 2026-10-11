@@ -26,7 +26,7 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 8. **Docker deployment** - Multi-stage Dockerfile with standalone output
 9. **Health check endpoint** - `/api/health` for container orchestration
 10. **Loki logging** - Structured server-side logging with Grafana Loki (production) and console fallback (local dev)
-11. **Webhook provisioning docs** - Aegis user.verified webhook contract and reference implementation for tenant-side user provisioning
+11. **Webhook provisioning docs** - Aegis user.verified/user.deleted webhook contract and reference implementation for tenant-side user provisioning
 
 ## Step 1: Gather Project Information
 
@@ -41,13 +41,13 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 2. **"What is the site domain?"** (e.g., "devnotes.ai", "taskflow.reallybadapps.com")
    - Used for `NEXT_PUBLIC_SITE_DOMAIN`
 
-3. **"What is the Aegis API URL?"** (default: `https://aegis.reallybadapps.com`)
+3. **"What is the Aegis API URL?"** (required; no default — use the deployment’s actual Aegis URL)
    - Used for `NEXT_PUBLIC_AEGIS_API_URL` (browser bootstrap) and `AEGIS_API_URL` (server-side proxy)
 
 3a. **"What is the tenant API key for this site? (Get it from the Aegis admin dashboard → Site → Settings → Tenant API Key)"**
    - Used for `AEGIS_TENANT_API_KEY` (server-side only). REQUIRED for the gated public auth endpoints. See Step 5b and `references/tenant-api-key-templates.md`.
 
-3b. **"What is the site_id for this site in Aegis?"** (visible in the admin dashboard)
+3b. **"What is the site UUID for this site in Aegis?"** (visible in the admin dashboard)
    - Used for `AEGIS_SITE_ID` (server-side, used by proxy routes for verify-email/etc.).
 
 4. **"What is the container registry URL?"** (e.g., `ghcr.io/org/project-frontend`)
@@ -56,13 +56,16 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 5. **"What is a one-line description of the project?"** (e.g., "AI-powered release notes platform")
    - Used in metadata, home page subtitle, health check
 
-6. **"Does your backend need to provision users when they verify on Aegis? If yes, what backend handles it?"** (e.g., "Yes, Flask backend" / "Yes, Next.js API routes" / "No")
+6. **"What author name and email should package.json use?"**
+   - Used for `{author_name}` and `{author_email}`; reuse established repository attribution if available.
+
+7. **"Does your backend need to provision users when they verify on Aegis? If yes, what backend handles it?"** (e.g., "Yes, Flask backend" / "Yes, Next.js API routes" / "No")
    - Determines whether to include webhook setup instructions in Step 14
 
 ## Step 2: Create Directory Structure
 
 ```
-{project-name}-frontend/
+{project-name}/
 ├── app/
 │   ├── layout.tsx
 │   ├── globals.css
@@ -98,6 +101,8 @@ This skill scaffolds a complete Next.js 16 frontend with ByteForge Aegis authent
 ├── tsconfig.json
 ├── tailwind.config.ts
 ├── postcss.config.mjs
+├── eslint.config.mjs
+├── .dockerignore
 ├── global.d.ts
 ├── .env.example
 ├── .gitignore                          # includes VERSION (and build-publish.sh if Tier 2)
@@ -115,10 +120,11 @@ Generate each configuration file using the templates in `references/config-templ
 - `tsconfig.json` - ES2017 target, strict mode, `@/*` path alias
 - `tailwind.config.ts` - Content paths for app/ and components/
 - `postcss.config.mjs` - `@tailwindcss/postcss` plugin
-- `global.d.ts` - IntlMessages type declaration
-- `.env.example` - `NEXT_PUBLIC_AEGIS_API_URL`, `NEXT_PUBLIC_SITE_DOMAIN`, and Loki logging variables
+- `global.d.ts` - next-intl AppConfig message types
+- `eslint.config.mjs` - Next.js 16 flat ESLint configuration
+- `.env.example` - `NEXT_PUBLIC_AEGIS_API_URL`, `NEXT_PUBLIC_SITE_DOMAIN`, `AEGIS_SITE_ID` (UUID), server-only tenant key, and Loki logging variables
 
-**CRITICAL**: Replace all instances of `{project-name}`, `{ProjectName}`, `{site_domain}`, `{aegis_api_url}`, and `{project_description}` in every file.
+**CRITICAL**: Replace all instances of `{project-name}`, `{ProjectName}`, `{site_domain}`, `{aegis_api_url}`, `{aegis_site_uuid}`, `{project_description}`, `{author_name}`, and `{author_email}` in every file.
 
 ## Step 4: Create i18n Infrastructure
 
@@ -138,7 +144,7 @@ Generate files from `references/auth-templates.md`:
 - `lib/browserClient.ts` - Singleton AuthClient that persists tokens in memory and syncs to localStorage. Includes `initAuthClientFromLogin()`, `refreshAuthTokens()`, `isTokenExpired()`, `clearAuthClient()`, and the `browserAuthProxy` shim that posts to the local `/api/frontend/auth/*` proxy routes (used by auth pages for the six tenant-key-gated endpoints).
 - `lib/useAuth.ts` - React hook that reads auth state from localStorage, proactively refreshes tokens (5-minute buffer, 60-second check interval), and auto-logs out on refresh failure.
 
-These files are identical across projects except for the default env variable values (`{aegis_api_url}`, `{site_domain}`).
+These files are identical across projects except for the deployment env variable values (`{aegis_api_url}`, `{site_domain}`).
 
 ### Step 5b: Tenant API Key Proxy Routes (Required)
 
@@ -155,7 +161,7 @@ Generate from `references/tenant-api-key-templates.md`:
 - `app/api/frontend/auth/check-verification-token/route.ts`
 - (The `browserAuthProxy` helper is already inlined in `lib/browserClient.ts` from Step 5 — auth pages call it instead of the singleton `AuthClient` for the gated endpoints.)
 
-**Ask the user:** "Do you have a tenant API key for this site (from the Aegis admin dashboard)?" If yes, set `AEGIS_TENANT_API_KEY` in `.env.local`. If no, direct them to Aegis admin → Site → Settings → Tenant API Key. The site's `id` becomes `AEGIS_SITE_ID`.
+**Ask the user:** "Do you have a tenant API key for this site (from the Aegis admin dashboard)?" If yes, set `AEGIS_TENANT_API_KEY` in `.env.local`. If no, direct them to Aegis admin → Site → Settings → Tenant API Key. The site's `uuid` becomes `AEGIS_SITE_ID`; keep it as a string.
 
 **Also ask:** "Does this project already have a separate backend (Flask, Express, FastAPI, etc.) that the frontend talks to?" If **yes**, host the 6 proxy endpoints in that backend instead of in Next.js API routes — see the "Alternative: Proxy Lives in a Sibling Backend" section in `references/tenant-api-key-templates.md`. Reference implementation: `hivemake.ai`. The Next.js side then uses two `AuthClient` singletons (Aegis-direct + backend-proxy) and skips the `/api/frontend/auth/*` routes and `browserAuthProxy` shim entirely. If **no**, use the default pattern below.
 
@@ -220,7 +226,8 @@ Contains all translation keys organized by page: Common, Home, Welcome, Login, V
 
 Generate from `references/docker-templates.md`:
 
-- `Dockerfile` - 3-stage build (deps → builder → runner) with CR_PAT for private GitHub packages. `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` are baked in as build args (Stage 2 ARG/ENV).
+- `Dockerfile` - 3-stage build (deps → builder → runner) with a BuildKit `cr_pat` secret for private GitHub packages. `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` are baked in as build args (Stage 2 ARG/ENV).
+- `.dockerignore` - Exclude local env files, credentials, node_modules, build output, and Git metadata from the build context
 - `docker-compose.example.yaml` - Service definition with image URL, port mapping, and **server-side runtime env vars** (`AEGIS_API_URL`, `AEGIS_TENANT_API_KEY`, `AEGIS_SITE_ID`) consumed by the `/api/frontend/auth/*` proxy routes. These must NOT be `NEXT_PUBLIC_` — the tenant key must never reach the browser.
 - `app/api/health/route.ts` - Returns JSON with status, service name, and unix timestamp
 
@@ -231,11 +238,11 @@ Generate `build-publish.sh` from `references/build-publish-template.md`. **Ask t
 - **Tier 1 (Standard)** — values sourced from environment. Best for CI/CD and teams. Committed to the repo.
 - **Tier 2 (Baked-in)** — `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` hardcoded at the top of the script. Best for developer laptops with a single stable deployment target. Must be gitignored.
 
-**Why this step exists:** The `flask-docker-deployment` `build-publish.sh` pattern only passes `CR_PAT` as a build arg. A Next.js frontend also needs `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` as build args because those values are baked into the client JavaScript bundle at build time. Blindly copying the Flask pattern produces an image that starts successfully but has the wrong backend URL in the client bundle.
+**Why this step exists:** Both deployment skills pass `CR_PAT` through a BuildKit secret. A Next.js frontend also needs `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` as build args because those values are baked into the client JavaScript bundle at build time. Blindly copying the Flask pattern produces an image that starts successfully but has the wrong backend URL in the client bundle.
 
 Actions:
 
-1. **Generate `build-publish.sh`** from the chosen tier in the template. Replace `{registry_url}` with the container registry URL from Step 1. For Tier 2, also replace `{aegis_api_url}` and `{site_domain}`.
+1. **Generate `build-publish.sh`** from the chosen tier in the template. Replace `{registry_url}` with the container registry URL from Step 1. For Tier 2, also replace `{aegis_api_url}` and `{site_domain}`. If the proxy is in a sibling backend, set `AUTH_PROXY_MODE=sibling` and provide `NEXT_PUBLIC_BACKEND_API_URL` plus `NEXT_PUBLIC_AEGIS_SITE_ID`; the script forwards both as public build arguments. Keep the tenant key on that backend.
 
 2. **`chmod +x build-publish.sh`**
 
@@ -262,7 +269,7 @@ This provides a dual-mode logger:
 - **Local dev** (`DEBUG_LOCAL=true`) — Formatted console output, no Loki connection needed
 - **Production** (`LOKI_URL` set) — Structured JSON logs shipped to Grafana Loki with batching
 
-After creating `lib/logger.ts`, import the `logger` singleton in all API route handlers (`app/api/**/route.ts`). Use `logger.info()` for success paths and `logger.error()` in catch blocks, always including the `route` field in extra for Loki filtering.
+After creating `lib/logger.ts`, import the `logger` singleton in application API route handlers (`app/api/**/route.ts`), excluding routine successful `/api/health` probes. Use `logger.info()` for success paths and `logger.error()` in catch blocks, always including the `route` field in extra for Loki filtering.
 
 **CRITICAL**: Replace `{project-name}` in the logger template (appears in emitter tags and the default singleton).
 
@@ -270,18 +277,19 @@ After creating `lib/logger.ts`, import the `logger` singleton in all API route h
 
 ## Step 14: Configure Aegis Webhook (Optional)
 
-If the user indicated their backend needs to provision users on verification (Step 1, question 6), guide them through webhook setup using `references/webhook-templates.md`.
+If the user indicated their backend needs to provision users on verification (Step 1, question 7), guide them through webhook setup using `references/webhook-templates.md`.
 
 This step is **backend-agnostic** — the webhook handler can live in a Next.js API route, Flask endpoint, Express server, or any other backend that can receive HTTP POST requests.
 
 Key actions:
 1. Explain the webhook contract (payload shape, headers, signing algorithm)
-2. Add `AEGIS_WEBHOOK_SECRET` to the project's `.env.example`
-3. Provide the appropriate reference implementation:
+2. Add `AEGIS_WEBHOOK_SECRET` and required `AEGIS_SITE_ID` to the **receiving backend repository’s** `.env.example` (only the Next.js repo if it hosts the handler)
+3. Generate the receiver **and implement its transactional identity-store adapter** using the project’s DB layer. Register the Flask adapter in `app.extensions` or replace the Next.js fail-closed adapter; the placeholder is not a finished integration. Require duplicate, deletion-before-verification, cached-bearer-after-deletion, concurrency, and rollback tests.
+4. Provide the appropriate reference implementation:
    - **Next.js**: Use the API route skeleton from the templates
-   - **Flask**: Reference the NoteForge implementation pattern
+   - **Flask**: Use the Flask receiver and transactional persistence contract
    - **Other**: Walk through the signature verification algorithm and provisioning pattern
-4. Remind the user to configure `webhook_url` on their Aegis site via the admin API
+5. Remind the user to configure `webhook_url` on their Aegis site via the admin API
 
 If the user does **not** need webhook provisioning, skip this step entirely.
 
@@ -289,14 +297,17 @@ If the user does **not** need webhook provisioning, skip this step entirely.
 
 ```bash
 npm install
+npm run lint
+npx tsc --noEmit
 npm run build
 ```
 
-Verify all 10 pages generate (3 locales × pages if multiple languages, or just `/en/*` for single language).
+Verify the eight locale pages (home, dashboard, and six auth pages) for every configured locale. Smoke-test login, missing/invalid verification tokens, refresh, and logout. The baseline uses request-time locale resolution; dynamic routes are expected. If static locale rendering is explicitly wanted, add `setRequestLocale` in every relevant server layout/page before next-intl calls and verify the build output; `generateStaticParams` alone does not make the routes static.
 
 ## Design Principles
 
 ### Authentication Pattern
+- Aegis JS 4.2.0 uses UUID strings: `Site.uuid`, `User.uuid`, `User.site_uuid`, and token `user_uuid`; never parse IDs as numbers
 - **Singleton AuthClient** in `browserClient.ts` persists tokens in memory and syncs to localStorage
 - Login page calls `initAuthClientFromLogin()` instead of manual `localStorage.setItem()` calls
 - `useAuth` hook proactively refreshes tokens 5 minutes before expiry (checks every 60s)
@@ -315,7 +326,7 @@ Verify all 10 pages generate (3 locales × pages if multiple languages, or just 
 ### Webhook Provisioning
 - **Flow**: User signs up on Aegis → verifies email → Aegis fires `user.verified` webhook → tenant backend provisions user (creates DB record, generates API key, etc.)
 - **Signing**: HMAC-SHA256 over `"{timestamp}.{body}"` with shared secret — tenant verifies before processing
-- **Idempotent 3-branch pattern**: (1) Aegis ID already exists → no-op, (2) email exists but no Aegis ID → link it, (3) new user → create record
+- **Durable handling**: deduplicate by `event_id`; scope identities by site/user UUID; process `user.deleted` with a permanent tombstone that also gates bearer-based provisioning and late `user.verified` retries. Commit before returning success.
 - **Backend-agnostic**: The webhook handler can be any HTTP endpoint — Next.js API route, Flask blueprint, Express middleware, etc.
 - **Optional**: Not all projects need webhook provisioning. Only include when the tenant site has its own user records to create.
 
@@ -329,7 +340,7 @@ Verify all 10 pages generate (3 locales × pages if multiple languages, or just 
 ## Integration with Other Skills
 
 ### Docker Deployment
-The `build-publish.sh` script generated in Step 12 is **specific to this skill** — do not substitute the `flask-docker-deployment` version. Next.js frontends require `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` as build args (they are baked into the client JavaScript bundle at build time), and the frontend template validates all three build args up front to avoid silent misconfiguration. See `references/build-publish-template.md` for the full template and rationale.
+The `build-publish.sh` script generated in Step 12 is **specific to this skill** — do not substitute the `flask-docker-deployment` version. Next.js frontends require `NEXT_PUBLIC_AEGIS_API_URL` and `NEXT_PUBLIC_SITE_DOMAIN` as build args (they are baked into the client JavaScript bundle at build time), and the frontend template validates the credential and both public build variables up front to avoid silent misconfiguration. See `references/build-publish-template.md` for the full template and rationale.
 
 ### Database
 If the project needs a database, use **postgres-setup** skill.
@@ -340,14 +351,14 @@ If the project also has a Flask backend on the same Loki infrastructure, use **b
 ### Backend Aegis Identity Resolution
 When the frontend talks to a custom backend (Next.js API routes, sibling Flask service, etc.), the backend has two ways to resolve Aegis identities to user records — pick whichever fits the calling pattern:
 
-- **`GET /api/auth/me`** — bearer-token introspection. Use when you receive an `Authorization: Bearer <aegis_token>` from a frontend caller and need to know which user it represents. Available as of Aegis image v39 / TS client `2.8.0` / Python client `1.2.0`.
-- **`GET /api/sites/{site_id}/users/{user_id}`** — tenant-key-gated user lookup by id. Use when an inbound non-Aegis credential (internal API key, stored service identity, cron job) maps to an Aegis `user_id` but no bearer is present, and you need the current `role` for authorization. Available with the post-tenant-key-gate Aegis backend / TS client `2.11.0` / Python client `1.6.0`.
+- **`GET /api/auth/me`** — bearer-token introspection. Use when you receive an `Authorization: Bearer <aegis_token>` from a frontend caller and need to know which user it represents. Use the UUID-capable backend and the tested JS `4.2.0` / Python `3.3.0` client baseline.
+- **`GET /api/sites/{site_id}/users/{user_id}`** — tenant-key-gated user lookup by id. Use when an inbound non-Aegis credential (internal API key, stored service identity, cron job) maps to an Aegis `user_id` but no bearer is present, and you need the current `role` for authorization. The path parameters are UUID strings; use the same tested client baseline.
 
 Both return the same standard user shape including `role`. Neither should be called from the frontend itself — login already returns the user, and these endpoints are for backend authz checks.
 
 See `references/backend-auth-templates.md` for drop-in middleware:
 - `/me`: Next.js helper `lib/aegisAuth.ts` and Flask decorator `@aegis_auth_required` with short-TTL token caching.
-- User-lookup: Next.js helper `lib/aegisUserLookup.ts` (uses TS client `2.11.0`+ typed `client.getUser`) and a Flask `admin_required` decorator example using Python client `1.6.0`+ typed `client.get_user(user_id)`.
+- User-lookup: `getAegisUser` in `lib/aegisAuth.ts` (JS `client.getUser`) and Python `get_aegis_user` (`client.get_user`), with caller authorization and outage-handling guidance.
 
 ## Additional Resources
 
@@ -365,11 +376,29 @@ All template code is organized in reference files for progressive loading:
 - **`references/design-system.md`** - globals.css with full design system
 - **`references/logging-templates.md`** - lib/logger.ts with Loki and console dual-mode logging
 - **`references/docker-templates.md`** - Dockerfile, docker-compose, health endpoint
-- **`references/build-publish-template.md`** - build-publish.sh script (two tiers: env-sourced and baked-in) with auto-versioning, three-build-arg validation, and public/ directory gotcha
-- **`references/webhook-templates.md`** - Aegis user.verified webhook contract, signature verification, and provisioning pattern
-- **`references/backend-auth-templates.md`** - Backend Aegis identity resolution: `/api/auth/me` bearer introspection (Next.js helper, Flask decorator) plus `GET /api/sites/{site_id}/users/{user_id}` user-lookup-by-id for non-bearer authz (Next.js fetch helper, Flask `admin_required` example using the typed Python `client.get_user`)
+- **`references/build-publish-template.md`** - build-publish.sh script (two tiers: env-sourced and baked-in) with auto-versioning, BuildKit secret and public-variable validation, and public/ directory gotcha
+- **`references/webhook-templates.md`** - Aegis user.verified/user.deleted webhook contract, signature verification, and provisioning pattern
+- **`references/backend-auth-templates.md`** - Backend Aegis identity resolution: `/api/auth/me` bearer introspection (Next.js helper, Flask decorator) plus `GET /api/sites/{site_id}/users/{user_id}` user-lookup-by-id for non-bearer authz (Next.js fetch helper, Python lookup example using the typed `client.get_user`)
 
 ---
+
+## Maintainer validation
+
+For template changes, generate a disposable app from the reference code blocks
+and run lint, TypeScript, and a production build with runtime secrets absent.
+Security regressions execute the Markdown examples with mocked network/storage:
+
+```bash
+# Python environment: Flask, byteforge-aegis-client-python 3.3.0,
+# and byteforge-aegis-models 2.8.0 already installed.
+python -m unittest discover -s skills/aegis-nextjs-frontend/tests -v
+# Node 24; point at the generated app's node_modules (TypeScript + Aegis 4.2.0).
+AEGIS_TEST_NODE_MODULES=/path/to/app/node_modules node --test skills/aegis-nextjs-frontend/tests/*.test.cjs
+```
+
+These tests do not deploy, call live Aegis, or push images. Receiver tests check
+validation and dispatch; the generated application's durable persistence adapter
+still needs its own transaction, concurrency, duplicate, and tombstone tests.
 
 ## Reporting problems with this skill
 

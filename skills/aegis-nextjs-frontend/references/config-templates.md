@@ -15,6 +15,7 @@ Before using these templates, you MUST replace all `{placeholder}` values with p
 | `{author_name}` | Author's full name | `Jason Byteforge` |
 | `{author_email}` | Author's email address | `jason@example.com` |
 | `{aegis_api_url}` | Full URL to the Aegis authentication API (must be browser-accessible) | `https://aegis.example.com` |
+| `{aegis_site_uuid}` | Site UUID string from Aegis admin | `01900000-0000-7000-8000-000000000002` |
 | `{site_domain}` | Domain of the site as registered in the Aegis site configuration | `myapp.example.com` |
 
 CRITICAL: The `{project-name}` placeholder uses hyphens (for npm naming conventions), while other placeholders use underscores. Pay attention to this distinction.
@@ -27,21 +28,21 @@ CRITICAL: The `NEXT_PUBLIC_` prefix on environment variables is required by Next
 
 ```json
 {
-  "name": "{project-name}-frontend",
+  "name": "{project-name}",
   "version": "1.0.0",
   "description": "{project_description}",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint ."
   },
   "author": "{author_name} <{author_email}>",
   "license": "Proprietary",
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.17",
-    "byteforge-aegis-client-js": "git+https://github.com/jmazzahacks/byteforge-aegis-client-js.git",
-    "byteforge-loki-logging-ts": "github:jmazzahacks/byteforge-loki-logging-ts",
+    "byteforge-aegis-client-js": "git+https://github.com/jmazzahacks/byteforge-aegis-client-js.git#e3736429b0994d488f10f692129aa48e925c5594",
+    "byteforge-loki-logging-ts": "git+https://github.com/jmazzahacks/byteforge-loki-logging-ts.git#6bf1526f8d7bd82f972560bfe2b898ae04f85250",
     "next": "^16.0.1",
     "next-intl": "^4.6.1",
     "react": "^19.2.3",
@@ -50,6 +51,7 @@ CRITICAL: The `NEXT_PUBLIC_` prefix on environment variables is required by Next
   "devDependencies": {
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.3",
+    "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.22",
     "eslint": "^9.39.1",
     "eslint-config-next": "^16.0.1",
@@ -162,10 +164,10 @@ CRITICAL: This uses the `@tailwindcss/postcss` plugin (Tailwind CSS v4 approach)
 ```typescript
 import en from './messages/en.json';
 
-type Messages = typeof en;
-
-declare global {
-  interface IntlMessages extends Messages {}
+declare module 'next-intl' {
+  interface AppConfig {
+    Messages: typeof en;
+  }
 }
 ```
 
@@ -185,16 +187,23 @@ NEXT_PUBLIC_AEGIS_API_URL={aegis_api_url}
 # Site domain for authentication (must match aegis site configuration)
 NEXT_PUBLIC_SITE_DOMAIN={site_domain}
 
+# Sibling-backend variant only: required at build time for that variant.
+# AUTH_PROXY_MODE=sibling
+# NEXT_PUBLIC_BACKEND_API_URL=https://api.example.com
+# NEXT_PUBLIC_AEGIS_SITE_ID={aegis_site_uuid}
+
+# Default Next.js proxy: runtime config below. For the sibling-backend
+# variant, put these three vars in the backend repo instead.
 # Server-side Aegis URL (used by /api/frontend/auth/* proxy routes)
 AEGIS_API_URL={aegis_api_url}
 
 # Per-tenant secret for X-Tenant-Api-Key header. Get from the Aegis admin
 # dashboard. SERVER-SIDE ONLY — never expose in browser code.
 # See references/tenant-api-key-templates.md for the full pattern.
-AEGIS_TENANT_API_KEY={paste_from_aegis_admin_dashboard}
+AEGIS_TENANT_API_KEY=
 
-# Site ID from Aegis (server-side, used by proxy routes for verify-email/etc.)
-AEGIS_SITE_ID={your_site_id}
+# Site UUID string from Aegis (server-side, used by proxy routes for verify-email/etc.)
+AEGIS_SITE_ID={aegis_site_uuid}
 
 # Logging: set DEBUG_LOCAL=true for console output, omit or set to false for Loki
 DEBUG_LOCAL=true
@@ -209,3 +218,30 @@ CRITICAL: Copy this file to `.env.local` for local development. Never commit `.e
 CRITICAL: The `NEXT_PUBLIC_AEGIS_API_URL` must be accessible from the user's browser, not just from the server. This means it cannot be an internal Docker network address in production -- it must be a publicly routable URL or a URL accessible from the client's network.
 
 CRITICAL: The `NEXT_PUBLIC_SITE_DOMAIN` must exactly match the site domain configured in the Aegis backend. A mismatch will cause authentication failures.
+
+
+## 8. eslint.config.mjs
+
+```javascript
+import { defineConfig, globalIgnores } from 'eslint/config';
+import nextVitals from 'eslint-config-next/core-web-vitals';
+import nextTs from 'eslint-config-next/typescript';
+
+export default defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  globalIgnores(['.next/**', 'out/**', 'build/**', 'next-env.d.ts']),
+]);
+```
+
+Run `eslint .` separately from the build; Next.js 16 removed `next lint`.
+See [Next.js ESLint configuration](https://nextjs.org/docs/app/api-reference/config/eslint)
+and [next-intl AppConfig augmentation](https://next-intl.dev/docs/workflows/typescript).
+
+The Git revisions above pin the tested Aegis JS 4.2.0 and Loki 0.5.0 contracts.
+Commit the generated package-lock.json. When updating either revision, review its
+lifecycle scripts and re-run lint, typecheck, and build. Git dependencies may need
+`prepare` to create dist/: inspect the installed package entrypoints. If npm's
+script policy blocks a reviewed Git dependency, explicitly build that dependency
+in an isolated install step and verify its exports; do not broadly enable scripts
+for every dependency or assume allowScripts covers Git prepare scripts.

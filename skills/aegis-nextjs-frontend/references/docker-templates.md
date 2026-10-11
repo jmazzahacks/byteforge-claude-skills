@@ -6,46 +6,54 @@ This file contains Docker deployment templates for Aegis-powered Next.js fronten
 
 ## Dockerfile
 
-Three-stage build optimized for production Next.js standalone output. Uses `CR_PAT` build arg to authenticate against private GitHub npm packages.
+Three-stage build optimized for production Next.js standalone output. Uses a BuildKit `cr_pat` secret to authenticate against private GitHub npm packages.
 
 ```dockerfile
+# syntax=docker/dockerfile:1
 # =============================================================
 # Stage 1: Dependencies
 # Install all npm dependencies, including private GitHub packages.
 # =============================================================
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
-
-# GitHub token for private packages
-ARG CR_PAT
 
 # Install git for GitHub dependencies
 RUN apk add --no-cache git
 
-# Configure git to use token for GitHub HTTPS URLs
-RUN git config --global url."https://${CR_PAT}@github.com/".insteadOf "https://github.com/"
-
-# Copy package files
 COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm ci
+# Secret and Git config exist only for this RUN. npm may normalize GitHub
+# dependencies to SSH URLs, so rewrite both transports without an SSH key.
+RUN --mount=type=secret,id=cr_pat,required=true \
+    GIT_CONFIG_COUNT=3 \
+    GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf \
+    GIT_CONFIG_VALUE_0=ssh://git@github.com/ \
+    GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf \
+    GIT_CONFIG_VALUE_1=git@github.com: \
+    GIT_CONFIG_KEY_2=http.https://github.com/.extraheader \
+    GIT_CONFIG_VALUE_2="Authorization: Basic $(printf 'x-access-token:%s' "$(cat /run/secrets/cr_pat)" | base64 | tr -d '\n')" \
+    npm ci
 
 # =============================================================
 # Stage 2: Builder
 # Build the Next.js application with environment variables
 # baked into the client-side bundle.
 # =============================================================
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Build-time arguments for NEXT_PUBLIC_* env vars (baked into client bundle)
 ARG NEXT_PUBLIC_AEGIS_API_URL={aegis_api_url}
 ARG NEXT_PUBLIC_SITE_DOMAIN={site_domain}
+# Sibling-backend variant only (public URL and UUID, never a tenant key)
+ARG NEXT_PUBLIC_BACKEND_API_URL
+ARG NEXT_PUBLIC_AEGIS_SITE_ID
 
 # Set as environment variables for the build
 ENV NEXT_PUBLIC_AEGIS_API_URL=$NEXT_PUBLIC_AEGIS_API_URL
 ENV NEXT_PUBLIC_SITE_DOMAIN=$NEXT_PUBLIC_SITE_DOMAIN
+ENV NEXT_PUBLIC_BACKEND_API_URL=$NEXT_PUBLIC_BACKEND_API_URL
+ENV NEXT_PUBLIC_AEGIS_SITE_ID=$NEXT_PUBLIC_AEGIS_SITE_ID
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
@@ -61,7 +69,7 @@ RUN npm run build
 # Minimal production image using Next.js standalone output.
 # Runs as non-root user for security.
 # =============================================================
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -97,24 +105,54 @@ CMD ["node", "server.js"]
 
 ---
 
+## .dockerignore
+
+Required before `COPY . .`: local secrets and host artifacts must not enter any
+build stage. Runtime env files are injected by the deployment, not copied.
+
+```dockerignore
+.git
+node_modules
+.next
+out
+coverage
+.env
+.env.*
+*.env
+**/.env*
+**/.npmrc
+**/.gitconfig
+**/*.pem
+**/*.key
+**/secrets
+VERSION
+build-publish.sh
+```
+
+---
+
 ## docker-compose.example.yaml
 
 ```yaml
-version: '3.8'
-
 services:
   {project-name}-frontend:
     image: {registry_url}:latest
     # Or build locally with custom configuration:
     # build:
     #   context: .
+    #   secrets:
+    #     - cr_pat
     #   args:
-    #     - CR_PAT=${CR_PAT}
     #     - NEXT_PUBLIC_AEGIS_API_URL={aegis_api_url}
     #     - NEXT_PUBLIC_SITE_DOMAIN={site_domain}
+    #     # Sibling-backend variant only:
+    #     - NEXT_PUBLIC_BACKEND_API_URL=${NEXT_PUBLIC_BACKEND_API_URL}
+    #     - NEXT_PUBLIC_AEGIS_SITE_ID=${NEXT_PUBLIC_AEGIS_SITE_ID}
     ports:
       - "3000:3000"
     environment:
+      # Default Next.js proxy only. For the sibling-backend variant, omit
+      # these three variables here and configure them on that backend.
       # Server-side Aegis config (NOT baked into the client bundle).
       # The /api/frontend/auth/* proxy routes use these to call Aegis on
       # behalf of the browser. AEGIS_TENANT_API_KEY must never be exposed
@@ -128,6 +166,11 @@ services:
       - LOKI_PASS=${LOKI_PASS}
       # - LOKI_CA_PATH=/app/ca.pem
     restart: unless-stopped
+
+# Uncomment with the local build block above:
+# secrets:
+#   cr_pat:
+#     environment: CR_PAT
 ```
 
 ---
@@ -222,21 +265,17 @@ All placeholders in these templates **must** be replaced before use. The table b
 
 ### Private GitHub Dependencies and CR_PAT
 
-The Dockerfile uses `git config` in Stage 1 to inject the `CR_PAT` (Classic Personal Access Token or fine-grained token) so that `npm ci` can resolve private GitHub packages. This approach works because:
+The token is mounted for the dependency install only; command-scoped
+`GIT_CONFIG_*` variables supply an HTTPS authorization header and rewrite SSH
+GitHub URLs. No token is embedded in a URL, ARG, ENV, or global .gitconfig.
+Use a token with access to the dependency repositories. Git dependencies can
+execute reviewed prepare scripts during npm ci; pin revisions, review those
+scripts, and verify dist entrypoints after installation.
 
-1. The `git config --global url.` rewrite rule transparently converts any `https://github.com/` URL to include the token.
-2. `npm ci` uses this git configuration when cloning `git+https://` dependencies.
-
-**Requirements for this to work:**
-
-- The `CR_PAT` token must have `read:packages` scope (for GitHub Packages) or `repo` scope (for private repo dependencies).
-- **`package-lock.json` must use `git+https://` URLs, NOT `git+ssh://` URLs.** If your lockfile contains `git+ssh://git@github.com/...` references, Docker builds will fail because there is no SSH key available in the container. To fix this, ensure `package.json` references use HTTPS format:
-  ```json
-  "dependencies": {
-    "@org/private-pkg": "git+https://github.com/org/private-pkg.git#semver:^1.0.0"
-  }
-  ```
-  Then delete `node_modules` and `package-lock.json` and run `npm install` to regenerate the lockfile with HTTPS URLs.
+npm may normalize git+https dependencies to git+ssh in package-lock.json. Keep
+the committed lockfile; the two rewrites handle both SSH forms. Do not delete a
+lockfile just to change its transport. See
+[Docker build secrets](https://docs.docker.com/build/building/secrets/).
 
 ### Next.js Standalone Output
 
@@ -262,7 +301,7 @@ Without this, the `.next/standalone` directory will not be generated and Stage 3
 
 ```bash
 docker build \
-  --build-arg CR_PAT="$CR_PAT" \
+  --secret id=cr_pat,env=CR_PAT \
   --build-arg NEXT_PUBLIC_AEGIS_API_URL="https://api.example.com" \
   --build-arg NEXT_PUBLIC_SITE_DOMAIN="app.example.com" \
   -t my-app-frontend:latest .
