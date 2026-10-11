@@ -41,7 +41,7 @@ A skill that provides a modern, standardized pattern for setting up Python libra
 **What it creates:**
 - `pyproject.toml` - Modern Python project configuration with hatchling
 - `src/{package_name}/` - Source layout with explicit package discovery
-- `.gitignore` - Comprehensive Python artifact exclusions, including Linux venv `lib64` symlinks
+- `.gitignore` - Comprehensive Python artifact exclusions, including Linux venv `lib64` symlinks and uv’s transient root `.lock`
 - `requirements.txt` - Development dependencies (includes build/twine for PyPI only)
 - `tests/` - Starter smoke test; `pytest` scoped via `testpaths` so the root-level venv isn't collected
 - `build-publish.sh` - Automated build and publish script (PyPI only)
@@ -281,7 +281,7 @@ A skill that scaffolds a multi-repo Python workspace with shared models library,
 **What it creates:**
 - Directory skeleton under `{project}/` with sub-project directories
 - Root `CLAUDE.md` describing each sub-project and which skills to use
-- Workspace and per-sub-project `.gitignore` files, including Linux venv `lib64` symlink exclusions
+- Workspace and per-sub-project `.gitignore` files, including Linux venv `lib64` symlink and uv root `.lock` exclusions
 - Next-steps documentation for running existing skills
 
 **Features:**
@@ -447,6 +447,7 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 - `requirements.in` — human-edited source-of-truth list of direct dependencies
 - `requirements.txt` — machine-generated, fully-pinned, `--generate-hashes` lock of the whole transitive tree
 - `pyproject.toml` — adds `[tool.uv] exclude-newer` (rolling release-age gate) and pins the build backend
+- `.gitignore` — excludes uv’s transient root `.lock` for root-level venvs while retaining dependency lockfiles
 - `Dockerfile` — installs via a digest-pinned `uv` instead of pip; private-dep auth uses required BuildKit secrets and process-only Git configuration
 
 **Features:**

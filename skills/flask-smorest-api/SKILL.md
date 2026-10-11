@@ -523,11 +523,14 @@ cp example.env .env
 
 ### Update .gitignore
 
-Add `.env` to `.gitignore` if not already present:
+Merge `.env` into `.gitignore` if not already present. When the venv lives at the project root (`python3 -m venv .`), also add `/.lock`: uv uses it for environment locking. Preserve the existing ignore rules; `uv.lock` is a separate dependency lockfile and must remain trackable.
 
 ```
 # Environment variables
 .env
+
+# uv writes this transient lock into the venv root (= project root here).
+/.lock
 ```
 
 ## Step 8: Create Requirements File

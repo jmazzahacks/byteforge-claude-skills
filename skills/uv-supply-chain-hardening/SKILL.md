@@ -742,6 +742,25 @@ uv pip compile dev-requirements.in \
   -o dev-requirements.txt
 ```
 
+Before the local install, check where the project's venv lives. With the
+`python3 -m venv .` convention used by [[python-project-scaffold]] and
+[[python-lib-setup]], uv writes a transient `.lock` file at the repository root.
+Merge this exact rule into the existing `.gitignore` once, preserving its other
+entries:
+
+```gitignore
+# uv writes this transient lock into the venv root (= project root here).
+/.lock
+```
+
+For a venv in an already-ignored directory such as `.venv/`, its `.lock` is
+already covered. Do not use `*.lock` or ignore `uv.lock`: dependency lockfiles
+are distinct from this environment lock. If the root `.lock` was already
+staged or committed, confirm it is the uv-generated artifact, then run
+`git rm --cached -- .lock` to stop tracking it while retaining the local file.
+Check `git check-ignore -v -- .lock` and review `git status --short` before
+committing.
+
 Local install — use **`uv pip install`**, not plain `pip`:
 
 ```bash

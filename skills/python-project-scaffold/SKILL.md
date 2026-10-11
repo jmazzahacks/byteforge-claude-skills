@@ -294,6 +294,8 @@ bin/
 lib/
 # No trailing slash: Linux venvs can make lib64 a symlink to lib.
 lib64
+# uv writes this transient lock into the venv root (= project root here).
+/.lock
 pyvenv.cfg
 include/
 share/
