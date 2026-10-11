@@ -150,7 +150,7 @@ Claude Code substitutes `$0`, `$1`, … in SKILL.md bodies with the skill's invo
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-vbc2bf1a2)
+## HiveMake operational playbook (hm-playbook-vb2731891)
 
 # Common — every HiveMake agent reads this
 
@@ -375,7 +375,69 @@ The gate you may hit at `resolve` is the backstop, not the mechanism. If you are
 
 **How:** Call `add_learning(content=..., category=<coarse tag>, source_ticket_id=<if any>)` right after the memory write. Content: same WHY/WHERE/WHEN hygiene as the memory body — enough that a reader can act on it. Include the incident, ticket id, or wall-clock date that surfaced the insight so it anchors against drift.
 
+Keep the returned `learning_id` with the corresponding memory or source record.
+When correcting that same learning later, use the revision workflow below;
+adding a second contradictory learning does not remove the first one.
+
 **Why:** Memory serves one agent across their own sessions; cognee serves the whole hive across every agent. Skipping the mirror means the next agent hits the same problem and re-derives — memory alone loses the insight to the outside world.
+
+## Correct your own learning without approval
+
+**When:** New evidence shows that a learning you authored is wrong or outdated.
+This workflow requires the correction tools to be deployed and enabled. Their
+presence in this playbook alone is not evidence that the running service supports
+them.
+
+**How:**
+
+1. Call `get_learning(learning_id)` and read its current content and `revision`.
+2. Call `revise_learning(learning_id, expected_revision=<revision you just read>,
+   content=<complete replacement text>, reason=<what changed and why>)`. Only
+   the original author can do this; no human or peer approval is required.
+   The content replaces the whole learning, so retain facts that remain valid.
+3. Acceptance saves a durable revision immediately; it does **not** mean recall
+   has changed. Check `get_learning` with backoff, starting around 30 seconds.
+   `pending` means indexing or cleanup remains unfinished and recall may still
+   contain the old fact. `ready` with `applied_revision == revision` means the
+   current revision finished indexing and cleanup. Read the returned content
+   too: a later correction may have superseded your submission.
+4. Use `learning_history(learning_id)` to inspect prior text and reasons. It
+   returns newest revisions first; pass the oldest returned revision as
+   `before_revision` for the next page. Keep your corresponding local memory
+   consistent with the correction and describe its indexing status honestly.
+
+**Handle conflicts and failures explicitly.** A `409 learning_revision_conflict`
+means someone or another session changed the learning since your read. Read it
+again and reconcile the content; do not blindly replace the revision number and
+resend stale text. If a request times out, read the current record/history before
+retrying because the write may have committed. A `failed` indexing status is not
+success: retain the learning ID and report the failure. Do not poll it forever
+or create repeated revisions as an automatic retry loop. After the cause is
+addressed, the author may submit the same text as a new revision with a retry
+reason, using the freshly read revision number.
+
+**Read visibility does not grant editing rights.** Open and owner-scope hives
+may share recall, but another agent cannot edit your learning or inspect its
+revision history through these tools. If another author's learning is wrong,
+ask its author to correct it through the normal ticket workflow. These tools
+do not change ticket resolutions and do not implement retraction.
+
+**After moving hives.** The original author retains access only while both hives
+are active, share the same current owner, and the original hive has `owner_scope`
+or `open` visibility. Open visibility alone does not allow cross-owner edits.
+Corrections and history stay in the original hive; moving never transfers
+ownership of the learning. Revoking access also blocks queued indexing. An
+already-running correction holds the policy stable until its bounded indexing
+operation finishes, so a concurrent move or ownership/visibility change may wait.
+After access is restored, read the latest revision and explicitly retry a failed
+correction with a new revision and reason. Do not loop automatically.
+
+**Unavailable is not corrected.** Missing tools or a disabled-feature response
+mean this workflow cannot run yet. Historical Cognee learnings require verified
+provenance import before editing; the migration does not adopt them automatically.
+`404 learning_not_found` also covers other authors' IDs, so it is not proof that
+the knowledge is absent from recall. Do not guess authorship, bypass the API with
+direct database edits, or claim a correction succeeded when it was unavailable.
 
 
 # Developer — for `hivemake-developer-agent` and downstream service dev agents
