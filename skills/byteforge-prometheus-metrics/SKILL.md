@@ -132,8 +132,8 @@ def create_app() -> Flask:
 # If you launch with the factory form `{app_file}:create_app()` (the default in
 # flask-docker-deployment and flask-smorest-api), DELETE this line: gunicorn
 # then calls create_app() a second time in the same worker, and in
-# single-process mode (no PROMETHEUS_MULTIPROC_DIR) the request metrics
-# silently vanish from /metrics — 200 OK, no flask_http_request_* series.
+# single-process mode (no PROMETHEUS_MULTIPROC_DIR), metrics.info('app_info', ...)
+# raises a duplicate-timeseries ValueError on the second registration.
 app = create_app()
 ```
 
@@ -142,7 +142,11 @@ app = create_app()
 - `{application_tag}` → the tag from Step 1, Q1
 - `{metrics_path}` → the scrape path from Step 1, Q5 (default `/metrics`)
 
-**Test suites that call `create_app()` more than once**: the single-process `PrometheusMetrics` branch registers its default metrics on the global `prometheus_client.REGISTRY`. With `prometheus_flask_exporter` 0.23.x, a second `create_app()` in the same process does **not** raise — the second app's `/metrics` still returns 200, but it contains no `flask_http_request_*` series, so any test asserting on request metrics fails confusingly (or passes vacuously if it only checks the status code). Build the app once per test session (session-scoped fixture), or pass `registry=CollectorRegistry()` to `PrometheusMetrics` in tests. Same root cause as the module-level `app = create_app()` warning in the template above.
+**Test suites that call `create_app()` more than once**: the single-process branch uses the global `prometheus_client.REGISTRY`. With this template's `metrics.info('app_info', ...)`, a second successful factory call raises a duplicate-timeseries `ValueError` (`DuplicateTimeseries` in newer prometheus-client versions). The exporter may suppress duplicate default-metric registration, but that does not protect `app_info`.
+
+Build the app once per pytest session and have tests request the shared `app` fixture. Use the `tests/conftest.py` and smoke-test examples in [flask-smorest-api Step 9b](../flask-smorest-api/SKILL.md#step-9b-create-pytestini-and-a-smoke-test), including its DB configuration variant when applicable. Keep `PROMETHEUS_MULTIPROC_DIR` unset for these single-process tests before Python starts. Avoid a module-level `app = create_app()` when the fixture calls the factory; if the project intentionally exports an already-created app, have the fixture return that instance instead. A fail-fast configuration test may call the factory directly only when it raises **before** metrics registration.
+
+If tests genuinely require independently configured apps, give each app a fresh `CollectorRegistry()` via `registry=` in the single-process `PrometheusMetrics` constructor and register its custom metrics on that same registry. Do not clear the global registry or catch duplicate-registration errors to hide the conflict. Verify a scrape contains both `app_info` and `flask_http_request_*` samples after a request; status 200 alone is insufficient.
 
 **Why `GunicornInternalPrometheusMetrics` and NOT `GunicornPrometheusMetrics`**: the names are one word apart and behave completely differently. `GunicornPrometheusMetrics` discards any `path` argument and never registers a Flask route — it expects a **separate** metrics HTTP server started from a gunicorn `when_ready` hook. Used on its own, `/metrics` returns 404 while shards are silently written to disk, so everything looks healthy until the first scrape. `GunicornInternalPrometheusMetrics` registers `/metrics` on the app itself (same port as your API); keep it off the public internet at the nginx layer (see Step 9).
 

@@ -587,18 +587,33 @@ pythonpath = .
 
 Use `pytest.ini`, not `pyproject.toml`: a Flask service usually has no `pyproject.toml`, and creating one just for pytest config invites confusion with the library skills.
 
-### File: `tests/test_app.py`
+### File: `tests/conftest.py`
+
+Build one app per test session. This also works when [byteforge-prometheus-metrics](../byteforge-prometheus-metrics/SKILL.md#step-3-wire-metrics-into-the-flask-app) is added: repeated successful factory calls would register `app_info` twice in the global Prometheus registry. Keep `PROMETHEUS_MULTIPROC_DIR` unset before starting these single-process tests. The app module must not also instantiate the factory at import time; if it intentionally exports an already-created app, return that instance from the fixture instead.
 
 ```python
+import pytest
+from flask import Flask
+
 from {project_name} import create_app
 
 
-def test_create_app_registers_routes() -> None:
-    # Builds the app and checks wiring only — no requests are sent, so this
-    # stays DB-free even after the TODO handlers start querying Postgres.
-    # Keep create_app() itself free of live-DB requirements so this runs
-    # anywhere (CI, a fresh clone, a laptop without Postgres).
+@pytest.fixture(scope='session')
+def app() -> Flask:
     app = create_app()
+    app.config['TESTING'] = True
+    return app
+```
+
+### File: `tests/test_app.py`
+
+```python
+from flask import Flask
+
+
+def test_create_app_registers_routes(app: Flask) -> None:
+    # Checks wiring only — no requests, so TODO handlers cannot touch Postgres.
+    # Keep create_app() itself free of live-DB requirements.
     rules = [rule.rule for rule in app.url_map.iter_rules()]
     assert '/api/{feature}' in rules
 ```
@@ -607,7 +622,27 @@ def test_create_app_registers_routes() -> None:
 - `{project_name}` → Snake case project name (e.g., "myapp")
 - `{feature}` → the first feature's snake case name (e.g., "tradable_token")
 
-**If the project uses the database** (Step 3's fail-fast check is present), use this version of `tests/test_app.py` instead. `create_app()` now requires the DB env vars, but still opens no connection, so a dummy password is enough — no Postgres needed:
+**If the project uses the database** (Step 3's fail-fast check is present), use this version of `tests/conftest.py` instead. Settings are validated without opening a connection, so a dummy password is enough — no Postgres needed. `MonkeyPatch.context()` works at session scope and restores the environment at teardown; the built-in `monkeypatch` fixture is function-scoped and cannot be injected into this fixture.
+
+```python
+from collections.abc import Iterator
+
+import pytest
+from flask import Flask
+
+from {project_name} import create_app
+
+
+@pytest.fixture(scope='session')
+def app() -> Iterator[Flask]:
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv('{PROJECT_NAME}_DB_PASSWORD', 'test-not-a-real-password')
+        app = create_app()
+        app.config['TESTING'] = True
+        yield app
+```
+
+Keep the route test above and append this configuration test to `tests/test_app.py`:
 
 ```python
 import pytest
@@ -615,18 +650,13 @@ import pytest
 from {project_name} import create_app
 
 
-def test_create_app_registers_routes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('{PROJECT_NAME}_DB_PASSWORD', 'test-not-a-real-password')
-    app = create_app()
-    rules = [rule.rule for rule in app.url_map.iter_rules()]
-    assert '/api/{feature}' in rules
-
-
 def test_create_app_fails_fast_without_db_password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv('{PROJECT_NAME}_DB_PASSWORD', raising=False)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='{PROJECT_NAME}_DB_PASSWORD'):
         create_app()
 ```
+
+This direct factory call is safe because Step 3 validates settings **before** metrics registration. Match the configuration error so a duplicate-metric error cannot make the test pass accidentally. All tests needing a successfully initialized app should request the shared fixture. Share the app, but create a fresh test client per test to keep cookies/session state isolated.
 
 Also replace `{PROJECT_NAME}` → uppercase project name (e.g., "MYAPP").
 

@@ -93,7 +93,7 @@ A skill that provides a production-ready pattern for building Flask REST APIs wi
 - ✅ Type-safe request/response with dataclass models (validation in `from_dict`)
 - ✅ Singleton manager pattern for database/service initialization
 - ✅ CORS support for frontend integration
-- ✅ Application factory pattern for testing
+- ✅ Application factory with a session-scoped pytest fixture compatible with Prometheus metrics
 - ✅ Gunicorn production server support
 - ✅ python-dotenv for environment variable management
 - ✅ example.env pattern for configuration
@@ -352,6 +352,7 @@ A skill that wires Prometheus metrics into a Python/Flask app **safely under mul
 - Symptom→cause→fix failure decoder for the multi-worker traps
 
 **Features:**
+- ✅ Shared pytest app guidance prevents duplicate `app_info` registration
 - ✅ Multi-worker gunicorn safe (no phantom `rate()`, no `process_start_time_seconds` plurality)
 - ✅ `application` label matches [[byteforge-loki-logging]] for correlated log/metric queries
 - ✅ Redis-backed custom collector for cross-worker business counters/gauges
