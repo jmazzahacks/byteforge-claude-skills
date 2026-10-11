@@ -195,7 +195,8 @@ downloads/
 eggs/
 .eggs/
 lib/
-lib64/
+# No trailing slash: Linux venvs can make lib64 a symlink to lib.
+lib64
 parts/
 sdist/
 var/

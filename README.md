@@ -41,7 +41,7 @@ A skill that provides a modern, standardized pattern for setting up Python libra
 **What it creates:**
 - `pyproject.toml` - Modern Python project configuration with hatchling
 - `src/{package_name}/` - Source layout with explicit package discovery
-- `.gitignore` - Comprehensive Python artifact exclusions
+- `.gitignore` - Comprehensive Python artifact exclusions, including Linux venv `lib64` symlinks
 - `requirements.txt` - Development dependencies (includes build/twine for PyPI only)
 - `tests/` - Starter smoke test; `pytest` scoped via `testpaths` so the root-level venv isn't collected
 - `build-publish.sh` - Automated build and publish script (PyPI only)
@@ -280,7 +280,7 @@ A skill that scaffolds a multi-repo Python workspace with shared models library,
 **What it creates:**
 - Directory skeleton under `{project}/` with sub-project directories
 - Root `CLAUDE.md` describing each sub-project and which skills to use
-- Workspace `.gitignore` for Python projects
+- Workspace and per-sub-project `.gitignore` files, including Linux venv `lib64` symlink exclusions
 - Next-steps documentation for running existing skills
 
 **Features:**

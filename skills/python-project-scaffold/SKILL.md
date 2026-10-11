@@ -292,7 +292,8 @@ build/
 # Virtual environments
 bin/
 lib/
-lib64/
+# No trailing slash: Linux venvs can make lib64 a symlink to lib.
+lib64
 pyvenv.cfg
 include/
 share/
