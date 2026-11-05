@@ -277,7 +277,7 @@ When running Flask under gunicorn, werkzeug and gunicorn create their own logger
 **Everything must be done inside `create_app()`** — not at module level — for two reasons:
 
 1. **One place for all logging wiring**: gunicorn attaches its own handlers to `gunicorn.error` / `gunicorn.access` in the master process *before* it imports your app, so by the time `create_app()` runs those handlers exist and can be cleared. Keeping the clearing right next to `configure_logging()` means the whole root-logger setup lives in one function that runs once per worker.
-2. **Gunicorn fork/SSL**: `configure_logging()` creates a Loki handler with a `requests.Session` and SSL context. If called at module level, this runs in gunicorn's **master process** before `fork()`. The SSL context doesn't survive the fork into worker processes, causing SSL errors on the first log messages until the session reconnects. Moving it into `create_app()` ensures the SSL context is created in the worker process where it will be used.
+2. **Gunicorn fork/SSL**: `configure_logging()` creates a Loki handler with a `requests.Session` and SSL context. If called at module level, this runs in gunicorn's **master process** before `fork()`. Before byteforge-loki-logging 0.1.11, that state doesn't survive the fork into worker processes, causing SSL errors or lost logs. Moving it into `create_app()` ensures it is created in the worker process where it will be used. From 0.1.11 the library resets this state after a fork, and you can [send master logs to Loki](#sending-gunicorn-master-records-to-loki) too.
 
 ```python
 import os
@@ -327,7 +327,7 @@ def create_app() -> Flask:
 
 Start it with `gunicorn "{module}:create_app()"`, which calls the factory in each worker process.
 
-If your entry point must be `{module}:app`, add `app = create_app()` at the bottom of the module. Leave that line out if the factory fails fast on missing config, such as a required database password: it would run on every import, so importing the module under pytest crashes test collection. Don't use `--preload` with either form, because it runs the factory in the master process before `fork()`.
+If your entry point must be `{module}:app`, add `app = create_app()` at the bottom of the module. Leave that line out if the factory fails fast on missing config, such as a required database password: it would run on every import, so importing the module under pytest crashes test collection. Avoid `--preload` with either form, because it runs the factory in the master process before `fork()`. Before 0.1.11 that breaks worker logging. From 0.1.11 logging still works, but the dependency-logger loop clears the master's stdout handlers, so bind failures and worker timeouts disappear from `docker logs`.
 
 **CRITICAL**: `configure_logging()` must be the first thing inside `create_app()`, before any code that logs. Do NOT call it at module level.
 
@@ -342,11 +342,49 @@ The only ordering that matters is the CRITICAL rule above: `configure_logging()`
 - `{application="<your-tag>"} | json | logger="gunicorn.error"` — should show `Worker exiting (pid: N)` records around a container rotation.
 - `{application="<your-tag>"} | json | logger="gunicorn.access"` — per-request lines, but **only if an access log is configured** (e.g. `--access-logfile -`). Without one, gunicorn emits no access records at all, so their absence proves nothing.
 
-**Gunicorn master-process records never reach Loki — by design.** `configure_logging()` runs post-fork inside the worker, and the master never imports your app, so it never gets the Loki handler. Master records stay on stdout: `Starting gunicorn`, `Listening at`, `Booting worker with pid`, `Handling signal`, `Shutting down: Master` — and, more importantly, **port-bind failures, workers that die before booting, and `WORKER TIMEOUT` kills**. A service that looks silent in Loki may be healthy-and-idle or failing to start; check `docker logs <container>` to tell which. Do not move `configure_logging()` to module level to "fix" this — that reintroduces the pre-fork SSL breakage described above.
+**Gunicorn master-process records don't reach Loki by default.** `configure_logging()` runs post-fork inside the worker, and the master never imports your app, so it never gets the Loki handler. Master records stay on stdout: `Starting gunicorn`, `Listening at`, `Booting worker with pid`, `Handling signal`, `Shutting down: Master` — and, more importantly, **port-bind failures, workers that die before booting, and `WORKER TIMEOUT` kills**. A service that looks silent in Loki may be healthy-and-idle or failing to start; check `docker logs <container>` to tell which, or send these records to Loki as described next.
+
+#### Sending Gunicorn master records to Loki
+
+**Requires byteforge-loki-logging 0.1.11 or later.** Check with `pip show byteforge-loki-logging`, and upgrade first if it's older. In a local test on 0.1.10, `Booting worker` records were lost, the master's startup records were sent more than once, and workers that didn't call `configure_logging()` themselves sent nothing. If you can't upgrade, leave master records on stdout, and don't move `configure_logging()` to module level.
+
+Add `gunicorn.conf.py` and keep `create_app()` unchanged. Replace `{application_tag}` as in Step 3:
+
+```python
+import logging
+import os
+from byteforge_loki_logging import configure_logging
+from gunicorn.glogging import Logger
+
+
+class LokiGunicornLogger(Logger):
+    def setup(self, cfg) -> None:
+        super().setup(cfg)
+        configure_logging(
+            application_tag='{application_tag}',
+            debug_local=os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true',
+            local_level=os.environ.get('LOG_LEVEL', 'INFO'),
+        )
+        # Gunicorn's named loggers set propagate=False, so route them to the
+        # root logger's Loki handler. Keep their stdout handlers here: master
+        # records then stay in `docker logs` too, for when Loki is down.
+        for name in ('gunicorn.error', 'gunicorn.access'):
+            logging.getLogger(name).propagate = True
+
+
+logger_class = LokiGunicornLogger
+```
+
+Start it with `gunicorn -c gunicorn.conf.py "{module}:create_app()"`.
+
+- **Workers:** each worker inherits this setup, and the `configure_logging()` call in `create_app()` reconfigures it. Worker records go to Loki only, as before, because the dependency-logger loop clears the stdout handlers in the worker. The master keeps its handlers.
+- **Startup failures:** a missing `LOKI_*` variable now stops gunicorn before it binds, and the error shows in `docker logs`. If Loki is unreachable, logging falls back to stdout and the app still starts.
+- **Duplicate lines:** with `DEBUG_LOCAL=true` or the stdout fallback, master records appear twice on stdout, once from each handler. Loki is unaffected.
+- **Forced exits:** `SIGKILL` can lose records that are still queued, so keep checking `docker logs` when a container dies abruptly.
 
 ### Multiprocessing / Forked Child Processes
 
-**For processes using Loki, call `configure_logging()` in each child that logs.** The Loki handler uses a background `QueueListener` thread and a `requests.Session` with an SSL context — neither survives `fork()`. A child process inherits a copy of the logging config with a dead handler, and logs go into a queue that nobody reads. No errors are raised because the queue accepts writes silently. MCP stdio servers and children sharing their stdout must use stderr-only logging instead; see the MCP integration below.
+**For processes using Loki, call `configure_logging()` in each child that logs.** This is required before byteforge-loki-logging 0.1.11: the Loki handler's background `QueueListener` thread and `requests.Session` don't survive `fork()`, so a child inherits a dead handler and its logs go into a queue that nobody reads. No errors are raised because the queue accepts writes silently. From 0.1.11 a child forked with Python's `os.fork()` can log through the inherited setup, but calling `configure_logging()` is still supported and is how a child gets different settings or an application tag. MCP stdio servers and children sharing their stdout must use stderr-only logging instead; see the MCP integration below.
 
 This applies to:
 - `multiprocessing.Process` target functions
@@ -363,9 +401,10 @@ from byteforge_loki_logging import configure_logging
 
 def run_job(job_id: str) -> None:
     """Target function for multiprocessing.Process — runs in a forked child."""
-    # CRITICAL: The parent's Loki handler (QueueListener thread + requests.Session)
-    # does not survive fork(). Re-initialize logging in the child process so it
-    # gets its own handler, thread, and SSL context.
+    # CRITICAL before byteforge-loki-logging 0.1.11: the parent's Loki handler
+    # (QueueListener thread + requests.Session) does not survive fork().
+    # Re-initialize logging in the child process so it gets its own handler,
+    # thread, and SSL context.
     debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
     log_level = os.environ.get('LOG_LEVEL', 'INFO')
     configure_logging(
@@ -390,7 +429,7 @@ process.start()
 | Process | Where to call | Why |
 |---------|--------------|-----|
 | Gunicorn worker | Inside `create_app()` | Runs post-fork in worker process |
-| `multiprocessing.Process` child | Top of target function | QueueListener thread + SSL context don't survive fork |
+| `multiprocessing.Process` child | Top of target function | QueueListener thread + SSL context don't survive fork before 0.1.11 |
 | Direct `os.fork()` child | Immediately after fork in child branch | Same reason |
 | Celery MainProcess (master + beat) | `@setup_logging.connect` receiver | Also suppresses celery's default log config so MainProcess events reach root |
 | Celery prefork pool child | `@worker_process_init.connect` receiver | Fork issue as above; **also raise `worker_proc_alive_timeout`** — see Celery section |
@@ -773,9 +812,9 @@ Verify with a stdio client: initialize, list tools, then invoke a tool that emit
 - Fix: delete the `app.logger.setLevel(...)` call. Leave it at NOTSET so it inherits root's level (which `configure_logging()` set from `LOG_LEVEL`). Keep the `handlers.clear()` + `propagate = True` lines — those are still load-bearing for the propagation half of the story.
 - Symptoms: with `LOG_LEVEL=INFO`, blueprint DEBUG lines are suppressed but `app.logger.debug(...)` reaches Loki anyway. Under gunicorn the split is wider than it looks because `app.logger` is `logging.getLogger('<module_name>')` — the same object your app module itself logs through.
 
-**Loki SSL errors on first few startup log messages (gunicorn):**
+**Loki SSL errors on first few startup log messages (gunicorn, byteforge-loki-logging before 0.1.11):**
 - `configure_logging()` was called at module level, which runs in gunicorn's master process before `fork()`. The Loki handler's `requests.Session` and its SSL context were initialized pre-fork, then broke in the child worker because SSL contexts don't survive `fork()`.
-- Fix: move `configure_logging()` inside `create_app()` so it runs post-fork in the worker process (see Flask + Gunicorn section above)
+- Fix: move `configure_logging()` inside `create_app()` so it runs post-fork in the worker process (see Flask + Gunicorn section above), or upgrade to 0.1.11 or later
 - Symptoms: SSL errors only on the first few startup log messages, then everything works fine after the session recovers
 
 **Gunicorn/werkzeug logs going to stdout instead of Loki:**
@@ -784,13 +823,13 @@ Verify with a stdio client: initialize, list tools, then invoke a tool that emit
 - Symptoms: application logs visible in `docker logs` or container stdout but missing from Grafana/Loki
 
 **Gunicorn startup, bind, and worker-timeout messages missing from Loki (app logs arrive fine):**
-- Expected, not a propagation bug. These come from gunicorn's master process, which never imports the app and so never runs `configure_logging()`.
-- Fix: none needed — read them with `docker logs <container>`. Do not move `configure_logging()` to module level (breaks the Loki handler's SSL session across `fork()`).
+- Expected by default, not a propagation bug. These come from gunicorn's master process, which never imports the app and so never runs `configure_logging()`.
+- Fix: read them with `docker logs <container>`, or on byteforge-loki-logging 0.1.11 or later [send them to Loki](#sending-gunicorn-master-records-to-loki). On older versions, do not move `configure_logging()` to module level (it breaks the Loki handler across `fork()`).
 - Symptoms: `logger="gunicorn.error"` shows `Worker exiting` records but never `Starting gunicorn` / `Listening at` / `Booting worker`; a container that fails to bind or boot looks silent in Loki.
 
 **Logs from multiprocessing.Process child processes not appearing in Loki:**
-- The parent's QueueListener thread and requests.Session do not survive `fork()`. The child inherits a dead handler — logs go into a queue that nobody reads. No errors are raised.
-- Fix: call `configure_logging()` at the top of the child process target function, before any logging (see Multiprocessing section above)
+- Before byteforge-loki-logging 0.1.11, the parent's QueueListener thread and requests.Session do not survive `fork()`. The child inherits a dead handler — logs go into a queue that nobody reads. No errors are raised.
+- Fix: call `configure_logging()` at the top of the child process target function, before any logging (see Multiprocessing section above), or upgrade to 0.1.11 or later
 - Symptoms: parent process logs appear in Loki, but all child process logs vanish silently
 
 **Celery worker running but no task logs in Loki, container is green:**
