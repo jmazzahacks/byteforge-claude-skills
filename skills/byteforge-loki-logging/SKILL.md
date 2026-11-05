@@ -55,7 +55,9 @@ pip install -r requirements.txt
 
 **For MCP servers, use the [MCP integration](#mcp-server-fastmcp--uvicorn) below instead of this module-level setup.** Select the transport before configuring logging: stdio requires stderr-only logging because stdout carries JSON-RPC.
 
-Add to the **top** of your main application file (e.g., `{app_file}.py`):
+**For Flask apps, use the [Flask + Gunicorn pattern](#flask--gunicorn-propagate-all-dependency-loggers) instead, which configures logging inside `create_app()`.** The module-level setup below is for plain scripts and other single-process programs.
+
+Add to the **top** of your main script (e.g., `{app_file}.py`):
 
 ```python
 import os
@@ -73,10 +75,10 @@ configure_logging(
 ```
 
 **CRITICAL**: Replace:
-- `{app_file}` -> Your main application filename (e.g., "myapp")
+- `{app_file}` -> Your main script filename (e.g., "myapp")
 - `{application_tag}` -> Your service name (e.g., "myapp")
 
-Place this **before** creating your Flask app or any other initialization.
+Place this **before** any other initialization.
 
 ### Structured JSON Logging
 
@@ -217,40 +219,42 @@ Use the integration below for your server or worker type; MCP stdio uses stderr-
 ## Integration with Other Skills
 
 ### Flask API Server
-If using **flask-smorest-api** skill, add logging **before** creating Flask app:
+If using **flask-smorest-api** skill, add logging as the first thing inside `create_app()`, **before** creating the Flask app. The [Flask + Gunicorn section](#flask--gunicorn-propagate-all-dependency-loggers) has the full pattern, including the dependency-logger loop.
 
 ```python
 import os
 from flask import Flask
 from byteforge_loki_logging import configure_logging
 
-# Configure logging FIRST
-debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
-log_level = os.environ.get('LOG_LEVEL', 'INFO')
-configure_logging(
-    application_tag='my-api',
-    debug_local=debug_mode,
-    local_level=log_level,
-)
+def create_app() -> Flask:
+    # Configure logging FIRST
+    debug_mode = os.environ.get('DEBUG_LOCAL', 'true').lower() == 'true'
+    log_level = os.environ.get('LOG_LEVEL', 'INFO')
+    configure_logging(
+        application_tag='my-api',
+        debug_local=debug_mode,
+        local_level=log_level,
+    )
 
-# Then create Flask app
-app = Flask(__name__)
+    # Then create Flask app
+    app = Flask(__name__)
 
-# IMPORTANT: Propagate Flask's logger to the root logger so unhandled
-# exceptions in route handlers reach Loki. Without this, Flask catches
-# exceptions internally and logs them via werkzeug to stdout/stderr,
-# bypassing the root logger that configure_logging() set up.
-#
-# DO NOT set app.logger's level here. Leaving it at NOTSET lets
-# isEnabledFor()'s ancestor walk reach root and inherit LOG_LEVEL.
-# Pinning to DEBUG would stop the walk at app.logger, so the level
-# check passes, the record propagates to root (whose handler is
-# NOTSET), and DEBUG lines reach Loki regardless of LOG_LEVEL.
-# See the Troubleshooting entry for the full trace.
-app.logger.handlers.clear()
-app.logger.propagate = True
+    # IMPORTANT: Propagate Flask's logger to the root logger so unhandled
+    # exceptions in route handlers reach Loki. Without this, Flask catches
+    # exceptions internally and logs them via werkzeug to stdout/stderr,
+    # bypassing the root logger that configure_logging() set up.
+    #
+    # DO NOT set app.logger's level here. Leaving it at NOTSET lets
+    # isEnabledFor()'s ancestor walk reach root and inherit LOG_LEVEL.
+    # Pinning to DEBUG would stop the walk at app.logger, so the level
+    # check passes, the record propagates to root (whose handler is
+    # NOTSET), and DEBUG lines reach Loki regardless of LOG_LEVEL.
+    # See the Troubleshooting entry for the full trace.
+    app.logger.handlers.clear()
+    app.logger.propagate = True
 
-# ... rest of setup
+    # ... rest of setup
+    return app
 ```
 
 **Why this matters**: Flask catches exceptions in route handlers and returns a 500 response, but by default it logs the traceback through its own `app.logger` using werkzeug's error handling — not through Python's root logger. Since `configure_logging()` configures the root logger, those tracebacks never reach Loki unless you clear Flask's default handlers and set `propagate = True`.
@@ -308,10 +312,11 @@ def create_app() -> Flask:
     # Flask + Gunicorn example).
 
     return app
-
-# create_app() runs when gunicorn imports the module in the WORKER process
-app = create_app()
 ```
+
+Start it with `gunicorn "{module}:create_app()"`, which calls the factory in each worker process.
+
+If your entry point must be `{module}:app`, add `app = create_app()` at the bottom of the module. Leave that line out if the factory fails fast on missing config, such as a required database password: it would run on every import, so importing the module under pytest crashes test collection. Don't use `--preload` with either form, because it runs the factory in the master process before `fork()`.
 
 **CRITICAL**: `configure_logging()` must be the first thing inside `create_app()`, before any code that logs. Do NOT call it at module level.
 
@@ -454,7 +459,7 @@ def _configure_or_die() -> None:
         _configure_loki_logging()
     except Exception as exc:
         print(f"FATAL: logging configuration failed: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 @setup_logging.connect
@@ -834,10 +839,9 @@ def create_app() -> Flask:
     # Flask + Gunicorn example).
 
     return app
-
-
-app = create_app()
 ```
+
+Start it with `gunicorn "myapp:create_app()"`.
 
 ```yaml
 # docker-compose.yaml
