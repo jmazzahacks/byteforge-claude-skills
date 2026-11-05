@@ -22,7 +22,7 @@ Use this skill when:
 2. **build-publish.sh** - Automated build script with version management
 3. **VERSION** file - Auto-incrementing version tracking (gitignored)
 4. **.gitignore** - Entry for VERSION file
-5. **Optional .dockerignore** - Exclude unnecessary files from build context
+5. **.dockerignore** - Keep the project-root virtualenv, secrets and other unneeded files out of the image
 
 ## Prerequisites
 
@@ -336,9 +336,9 @@ VERSION
 
 This prevents the VERSION file and environment secrets from being committed.
 
-## Step 5: Create .dockerignore (Optional but Recommended)
+## Step 5: Create .dockerignore
 
-Create `.dockerignore` to exclude unnecessary files from Docker build context:
+Create `.dockerignore` to exclude unnecessary files from the Docker build context. This matters most when the virtualenv is at the project root, the ByteForge convention: without these entries, `COPY . .` puts its `bin/` (with host-path shebangs), libraries and pip metadata into the image. Docker matches these patterns from the context root only, so a nested directory such as `src/{project_name}/bin/` is still copied. If the project keeps its own code in a top-level `bin/`, `lib/`, `include/` or `share/`, remove that entry.
 
 ```
 # Python
@@ -351,6 +351,10 @@ env/
 venv/
 .venv/
 ENV/
+bin/
+include/
+share/
+pyvenv.cfg
 build/
 develop-eggs/
 dist/
@@ -358,7 +362,7 @@ downloads/
 eggs/
 .eggs/
 lib/
-lib64/
+lib64
 parts/
 sdist/
 var/
@@ -513,7 +517,7 @@ This pattern follows these principles:
 
 ### Security:
 1. **Non-root user** - Container runs as unprivileged user
-2. **Minimal base image** - python:3.11-slim reduces attack surface
+2. **Minimal base image** - python:3.13-slim reduces attack surface
 3. **Build-time secrets** - CR_PAT enters the build via a BuildKit secret mount, is scrubbed from pip's install metadata inside the same RUN, and never appears in `docker history` or any image layer. The build self-verifies with `! grep -rq` — a surviving token byte fails the build.
 4. **Explicit permissions** - chown ensures correct file ownership
 
@@ -715,15 +719,15 @@ For smaller images, use multi-stage builds:
 
 ```dockerfile
 # Build stage
-FROM python:3.13-slim as builder
+FROM python:3.13-slim AS builder
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
 
 # For private GitHub deps, install `git` in this stage and replace the
 # pip install line with the same secret-mount + scrub pattern from Step 2 —
-# but scrub `/root/.local/lib/python3.13/site-packages` (that's where
-# `pip install --user` writes). The scrubbed --user tree is what gets
+# but scrub `/install/lib/python3.13/site-packages` (that's where
+# `pip install --prefix=/install` writes). The scrubbed tree is what gets
 # COPY'd into the runtime stage, so a leak here follows the image
 # downstream just as it would in the single-stage build.
 
@@ -736,9 +740,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /install /usr/local
 COPY . .
-ENV PATH=/root/.local/bin:$PATH
 RUN useradd --uid 1000 --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 ENV PORT=6100
@@ -749,7 +752,7 @@ CMD exec gunicorn --bind 0.0.0.0:$PORT --workers 4 app:app
 
 This pattern:
 - Installs dependencies in builder stage
-- Copies only installed packages to runtime
+- Copies only installed packages to runtime, under `/usr/local` so the non-root `appuser` can read them. Do not use `pip install --user` here: `/root` is mode 700, so `appuser` can't reach `/root/.local`
 - Results in smaller final image
 - Includes curl for health checks
 

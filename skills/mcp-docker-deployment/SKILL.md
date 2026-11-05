@@ -410,6 +410,7 @@ bin/
 lib/
 lib64/
 include/
+share/
 pyvenv.cfg
 .venv/
 .Python
