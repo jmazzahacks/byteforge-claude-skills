@@ -768,7 +768,9 @@ with db.get_cursor() as cursor:
 
 ### Recovery-path tests (mocked pool, no live Postgres)
 
-Drop into `tests/test_database.py`. These cover the three critical paths without needing a running database:
+Drop into `tests/test_database.py`. These cover the three critical paths without needing a running database.
+
+The import below matches the `src/{project_name}/database.py` location used with `flask-smorest-api`. For any other layout, change it to the path your application uses. Plain `pytest` can only import `src.` when the repo root is on the path: `flask-smorest-api`'s `pytest.ini` sets `pythonpath = .`. Without that setting, add it or run `python -m pytest` from the repo root.
 
 > **Verify each new regression test against the UNPATCHED code first.**
 > Before adding a test alongside a fix, revert the fix locally and run
@@ -787,7 +789,7 @@ import psycopg2
 import pytest
 from unittest.mock import MagicMock
 
-from {project_name}.database import Database, MAX_HEALTH_RETRIES
+from src.{project_name}.database import Database, MAX_HEALTH_RETRIES
 
 
 def _make_db_with_mocked_pool(connections):
