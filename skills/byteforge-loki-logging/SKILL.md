@@ -19,7 +19,7 @@ Use this skill when:
 
 1. **requirements.txt entry** - Adds `byteforge-loki-logging` dependency (public GitHub library)
 2. **Logging initialization** - Adds `configure_logging()` call to main application file
-3. **CA certificate configuration** - Docker Compose volume mount for your Loki CA certificate
+3. **CA certificate configuration** - `LOKI_CA_BUNDLE_PATH`, plus a Docker Compose volume mount if your Loki endpoint uses a private CA
 4. **Environment variable documentation** - All required Loki configuration
 
 ## Step 1: Gather Project Information
@@ -33,9 +33,9 @@ Use this skill when:
 2. **"What is your main application file?"** (e.g., "app.py", "server.py", "myapp.py")
    - Where to add the logging configuration
 
-3. **"What is your CA certificate filename?"** (e.g., "loki-ca.pem", "my-org-ca.pem")
-   - Required for secure Loki connection over TLS
-   - If the user does not have one or their Loki endpoint does not use a private CA, this step can be skipped
+3. **"Does your Loki endpoint use a private CA or a publicly trusted certificate?"**
+   - Private CA: also ask for the certificate filename (e.g., "loki-ca.pem", "my-org-ca.pem")
+   - Publicly trusted: no certificate file is needed, but `LOKI_CA_BUNDLE_PATH` must still point at the system CA bundle (see Step 4)
 
 ## Step 2: Add byteforge-loki-logging to requirements.txt
 
@@ -96,7 +96,9 @@ If the Loki connection test fails at startup, logging automatically falls back t
 
 ## Step 4: Configure CA Certificate
 
-If your Loki endpoint uses a private CA certificate, mount it into the container via Docker Compose as a read-only volume. **Do not** bake the certificate into the Dockerfile with `COPY`.
+`LOKI_CA_BUNDLE_PATH` is required whenever `DEBUG_LOCAL=false`, so every production deployment sets it. Only the value depends on your certificate.
+
+**Private CA:** mount the certificate into the container via Docker Compose as a read-only volume. **Do not** bake the certificate into the Dockerfile with `COPY`.
 
 In `docker-compose.yaml`:
 
@@ -115,7 +117,14 @@ services:
 
 The certificate will be available at `/app/certs/loki-ca.pem` inside the container.
 
-If your Loki endpoint does not use a private CA (e.g., uses a publicly trusted certificate), skip this step and omit `LOKI_CA_BUNDLE_PATH`.
+**Publicly trusted certificate:** skip the volume mount and point `LOKI_CA_BUNDLE_PATH` at the system CA bundle. Leaving it unset stops the app at startup. On Debian, Ubuntu and Alpine images, including `python:*-slim` and `python:*-alpine`:
+
+```yaml
+services:
+  {app_name}:
+    environment:
+      - LOKI_CA_BUNDLE_PATH=/etc/ssl/certs/ca-certificates.crt
+```
 
 ## Step 5: Document Environment Variables
 
@@ -137,9 +146,9 @@ Add to README.md or .env.example:
 - `LOKI_ENDPOINT` - Loki push API URL (e.g., https://loki.example.com/loki/api/v1/push)
 - `LOKI_USER` - Loki username for HTTP Basic Auth
 - `LOKI_PASSWORD` - Loki password for HTTP Basic Auth
-- `LOKI_CA_BUNDLE_PATH` - How the client validates Loki's TLS certificate. Required (non-empty) whenever the other three are set. Three valid shapes:
+- `LOKI_CA_BUNDLE_PATH` - How the client validates Loki's TLS certificate. Three valid shapes:
   - **Private CA** (Loki behind an internal PKI): path to a `.pem` file containing your CA cert, e.g. `/app/certs/loki-ca.pem`. Mount it into the container via docker-compose (see Step 4).
-  - **Public CA** (Grafana Cloud, any Loki fronted by a widely-trusted issuer): path to the system CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu images, `/etc/pki/tls/certs/ca-bundle.crt` on RHEL/Alpine. This is the safe choice — TLS is still verified against the system trust store.
+  - **Public CA** (Grafana Cloud, any Loki fronted by a widely-trusted issuer): path to the system CA bundle, e.g. `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu/Alpine images, `/etc/pki/tls/certs/ca-bundle.crt` on RHEL. This is the safe choice — TLS is still verified against the system trust store.
   - **`"false"` (literal string) — disables SSL verification entirely.** This is an escape hatch for dev/test/internal-network Loki where you accept the MITM risk. Do NOT reach for it as a shortcut for public-CA endpoints; the system-bundle path above is what you want there.
 
 ### Logging Behavior
@@ -178,6 +187,8 @@ services:
   {app_name}:
     build:
       context: .
+    # Private CA shown. For a publicly trusted certificate, remove volumes and
+    # use the system CA bundle for LOKI_CA_BUNDLE_PATH (see Step 4).
     volumes:
       - /path/to/{ca_cert_filename}:/app/certs/loki-ca.pem:ro
     environment:
@@ -743,13 +754,12 @@ Verify with a stdio client: initialize, list tools, then invoke a tool that emit
 - Check stderr for fallback warnings — if you see "Falling back to stdout", the Loki connection failed at startup
 
 **Missing CA certificate error:**
-- Ensure the volume mount is correct in docker-compose.yaml
-- Verify `LOKI_CA_BUNDLE_PATH` points to `/app/certs/loki-ca.pem`
-- Check that the source file exists on the host at the mounted path
+- Private CA: ensure the volume mount is correct in docker-compose.yaml, `LOKI_CA_BUNDLE_PATH` points to `/app/certs/loki-ca.pem`, and the source file exists on the host at the mounted path
+- Publicly trusted certificate: verify `LOKI_CA_BUNDLE_PATH` points at a system CA bundle that exists in the image (see Step 4)
 
 **Runtime error: Missing required environment variables:**
 - Only occurs when `DEBUG_LOCAL=false`. `_validate_loki_env_vars()` hard-requires ALL FOUR `LOKI_*` vars (endpoint, user, password, ca_bundle_path) to be non-empty — regardless of whether the endpoint uses a private or public CA.
-- Fix: set every one. For `LOKI_CA_BUNDLE_PATH` on a public-CA endpoint (Grafana Cloud etc.), point at the system trust store, e.g. `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu — NOT the string `"false"` unless you accept disabling TLS verification. See Step 5's `LOKI_CA_BUNDLE_PATH` block.
+- Fix: set every one. For `LOKI_CA_BUNDLE_PATH` on a public-CA endpoint (Grafana Cloud etc.), point at the system trust store, e.g. `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu/Alpine — NOT the string `"false"` unless you accept disabling TLS verification. See Step 5's `LOKI_CA_BUNDLE_PATH` block.
 - Check spelling (LOKI_, not MZ_LOKI_ or MATERIA_LOKI_).
 - Where you see it depends on the container: under gunicorn the RuntimeError crashes the worker at boot and gunicorn respawn-loops (visible in `docker logs`). Under celery WITHOUT the `_configure_or_die` wrapper from the Celery Workers section, celery's signal machinery swallows the exception AND the worker keeps running with zero root handlers — silent blackout. See "Celery worker running but no task logs in Loki, container is green" below.
 
@@ -847,6 +857,7 @@ Start it with `gunicorn "myapp:create_app()"`.
 # docker-compose.yaml
 services:
   myapp:
+    # Private CA shown; see Step 4 for a publicly trusted certificate.
     volumes:
       - ./certs/loki-ca.pem:/app/certs/loki-ca.pem:ro
     environment:
