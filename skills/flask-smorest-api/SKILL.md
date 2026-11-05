@@ -244,6 +244,8 @@ For each feature/endpoint, create a blueprint file:
 
 ### File: `blueprints/{feature}.py`
 
+**Every blueprint uses `url_prefix='/api'`.** This is a required convention, not a default to customize: nginx and request routing rely on one shared prefix across projects.
+
 ```python
 import logging
 from flask import request, jsonify
