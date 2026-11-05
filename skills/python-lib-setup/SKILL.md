@@ -55,11 +55,22 @@ Use this skill when:
    - **MIT**: Permissive open source, allows commercial use
    - **O'Saasy**: Modified MIT that reserves commercial SaaS rights for the copyright holder (see https://osaasy.dev/)
 
-8. **"What Python version should be the minimum requirement?"** (default: 3.8)
+8. **"What Python version should be the minimum requirement?"** (default: 3.13)
 
 9. **"What are your initial dependencies?"** (optional - comma-separated list, can be empty)
+   - **Check these against the Python minimum before writing `pyproject.toml`** (see "Check dependency Python requirements" below).
 
 10. **"What keywords describe your project?"** (optional - for PyPI searchability)
+
+### Check dependency Python requirements
+
+The minimum from question 8 must be at least as high as what every initial dependency requires, or the library won't install. Also check that the Python that will create the venv meets the minimum (`python3 --version`).
+
+For each dependency, find its `requires-python`:
+- **On PyPI:** `curl -fsS https://pypi.org/pypi/{dependency}/json | jq -r .info.requires_python`. This shows the latest release, so if the dependency is pinned to an older version, check that version instead: `https://pypi.org/pypi/{dependency}/{version}/json`.
+- **From a Git repo:** read `requires-python` in that repo's `pyproject.toml`.
+
+If a dependency needs a newer Python than the chosen minimum, tell the user which one and what it requires, then ask whether to raise the minimum before continuing. If you can't determine a dependency's requirement, say so rather than assuming it is compatible.
 
 ## Step 2: Create Directory Structure
 
@@ -87,7 +98,7 @@ description = "{project_description}"
 keywords = [{keywords_list}]
 readme = "README.md"
 requires-python = ">={python_version}"
-license = {text = "{license_name} License"}
+license = {text = "{license_text}"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "{license_classifier}",
@@ -137,8 +148,9 @@ Issues = "https://github.com/{github_username}/{project-name}/issues"
 - `{author_email}` → author's email — **only when distribution is `GitHub private`**. For `PyPI` and `GitHub public`, drop the `, email="..."` half and write the entry as `{ name="{author_name}" }` (PEP 621 allows the `email` field to be omitted; it must not be left blank or set to a placeholder, just omit the key).
 - `{project_description}` → one-line description
 - `{keywords_list}` → comma-separated quoted keywords (e.g., `"podcasting", "rss", "parser"`) or empty
-- `{python_version}` → minimum Python version (e.g., `3.8`)
-- `{license_name}` → license name (e.g., `MIT`, `O'Saasy`, `Proprietary - All Rights Reserved`)
+- `{python_version}` → minimum Python version (e.g., `3.13`)
+- `{license_name}` → license name for the README (e.g., `MIT`, `O'Saasy`, `Proprietary - All Rights Reserved`)
+- `{license_text}` → license text for `pyproject.toml`, exactly as listed under "License Text Handling" below
 - `{license_classifier}` → Full classifier string:
   - MIT: `License :: OSI Approved :: MIT License`
   - O'Saasy: `License :: Other/Proprietary License`
@@ -152,9 +164,9 @@ Issues = "https://github.com/{github_username}/{project-name}/issues"
 - O'Saasy → `Other/Proprietary License` (modified MIT with SaaS restrictions)
 
 **License Text Handling**:
-- **Proprietary**: Use `license = {text = "Proprietary - All Rights Reserved"}`
-- **MIT**: Use `license = {text = "MIT License"}`
-- **O'Saasy**: Use `license = {text = "O'Saasy License"}` and create LICENSE file from https://osaasy.dev/
+- **Proprietary**: `{license_text}` is `Proprietary - All Rights Reserved`
+- **MIT**: `{license_text}` is `MIT License`
+- **O'Saasy**: `{license_text}` is `O'Saasy License`, and create LICENSE file from https://osaasy.dev/
 
 ## Step 4: Create Comprehensive .gitignore
 
@@ -204,7 +216,7 @@ sdist/
 var/
 wheels/
 pip-wheel-metadata/
-share/python-wheels/
+share/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -505,7 +517,7 @@ import {package_name}
 python3 -m venv .
 
 # Activate virtual environment
-source bin/activate  # On Windows: bin\Scripts\activate
+source bin/activate  # On Windows: Scripts\activate
 
 # Install dependencies
 pip install --upgrade -r requirements.txt
@@ -610,7 +622,7 @@ import {package_name}
 python3 -m venv .
 
 # Activate virtual environment
-source bin/activate  # On Windows: bin\Scripts\activate
+source bin/activate  # On Windows: Scripts\activate
 
 # Install dependencies
 pip install --upgrade -r requirements.txt
@@ -663,8 +675,13 @@ chmod +x build-publish.sh
 If not already a git repository:
 ```bash
 git init
+git status --short
+```
+
+**Do not commit without asking.** Show the user what `git status --short` lists and ask whether to make the initial commit. Only if they approve:
+```bash
 git add .
-git commit -m "Initial project structure for PyPI package"
+git commit -m "Initial project structure"
 ```
 
 ## Step 12: Document Next Steps
