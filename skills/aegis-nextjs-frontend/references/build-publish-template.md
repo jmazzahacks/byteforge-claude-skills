@@ -3,7 +3,12 @@
 Use Bash and anchor to the script directory so invocation from a workspace root
 uses the correct Dockerfile and VERSION. Public Next.js config is baked into the
 client bundle; CR_PAT is passed only as a BuildKit secret. The script stops on a
-failed build/tag/push and updates VERSION only after both pushes succeed.
+failed build/tag/push and updates VERSION only after both pushes succeed. It also
+refuses to reuse a tag already in the registry, and stops if the registry can't
+confirm the tag is unused (usually a missing `docker login`). If it reports a
+stale VERSION, set VERSION to the highest published numeric tag; don't delete the
+existing tag. Keep to one publisher at a time, because the check and push are not
+atomic.
 
 ## Choose a tier
 
@@ -65,6 +70,27 @@ if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 VERSION=$((10#$CURRENT_VERSION + 1))
+IMAGE_TAG="{registry_url}:$VERSION"
+
+# VERSION is local and gitignored, so a stale copy can point at a tag that is
+# already published. Pushing would silently replace that image. Only a clear
+# "not found" from the registry counts as unused: auth, network and unrecognized
+# errors stop the script too.
+check_tag_unused() {
+    local output
+    if output=$(docker manifest inspect "$IMAGE_TAG" 2>&1); then
+        echo "$IMAGE_TAG already exists in the registry, so VERSION is stale." >&2
+        echo "Set VERSION to the highest published numeric tag and re-run." >&2
+        exit 1
+    fi
+    if ! grep -qiE 'manifest unknown|no such manifest|name unknown' <<< "$output"; then
+        echo "Could not confirm $IMAGE_TAG is unused:" >&2
+        echo "$output" >&2
+        exit 1
+    fi
+}
+
+check_tag_unused
 
 docker build "${build_options[@]}" \
     --secret id=cr_pat,env=CR_PAT \
@@ -73,6 +99,8 @@ docker build "${build_options[@]}" \
     --platform linux/amd64 \
     -t "{registry_url}:$VERSION" .
 docker tag "{registry_url}:$VERSION" "{registry_url}:latest"
+# Check again: the tag may have been published while this image was building.
+check_tag_unused
 docker push "{registry_url}:$VERSION"
 docker push "{registry_url}:latest"
 # Write only after both pushes succeed; the first successful publish is :1.

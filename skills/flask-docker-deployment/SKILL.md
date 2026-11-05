@@ -226,6 +226,27 @@ fi
 
 # Increment version
 VERSION=$((CURRENT_VERSION + 1))
+IMAGE_TAG="{registry_url}:$VERSION"
+
+# VERSION is local and gitignored, so a stale copy can point at a tag that is
+# already published. Pushing would silently replace that image. Only a clear
+# "not found" from the registry counts as unused: auth, network and unrecognized
+# errors stop the script too.
+check_tag_unused() {
+    local output
+    if output=$(docker manifest inspect "$IMAGE_TAG" 2>&1); then
+        echo "Error: $IMAGE_TAG already exists in the registry, so $VERSION_FILE is stale."
+        echo "Set $VERSION_FILE to the highest published numeric tag and re-run."
+        exit 1
+    fi
+    if ! grep -qiE 'manifest unknown|no such manifest|name unknown' <<< "$output"; then
+        echo "Error: Could not confirm $IMAGE_TAG is unused:"
+        echo "$output"
+        exit 1
+    fi
+}
+
+check_tag_unused
 
 echo "Building version $VERSION (incrementing from $CURRENT_VERSION)"
 
@@ -241,6 +262,9 @@ docker build $NO_CACHE --secret id=cr_pat,env=CR_PAT --platform linux/amd64 -t {
 
 # Tag the same image as latest
 docker tag {registry_url}:$VERSION {registry_url}:latest || exit 1
+
+# Check again: the tag may have been published while this image was building.
+check_tag_unused
 
 # Push both tags
 docker push {registry_url}:$VERSION || exit 1
@@ -625,10 +649,18 @@ docker run -it {registry_url}:latest /bin/bash
 
 ### Version file conflicts
 ```bash
-# If VERSION file gets corrupted, delete and rebuild
-rm VERSION
+# If VERSION is corrupted or behind the registry, set it to the highest numeric
+# tag published in the registry (24 is an example). Do not just delete it: it
+# would restart at :1, and the script stops if that tag already exists.
+echo "24" > VERSION
 ./build-publish.sh
 ```
+
+### build-publish.sh says a tag already exists
+The local `VERSION` is behind the registry, which is common on a new machine or fresh clone because `VERSION` is gitignored. Update it as shown above. Do not delete the existing tag to get past the check. The check and push are not atomic, so two machines publishing at the same moment can still collide; keep to one publisher at a time.
+
+### build-publish.sh says it could not confirm a tag is unused
+The registry did not give a clear "not found", so the script stops rather than risk overwriting an image. Read the error it prints: usually you need to run `docker login` for that registry. Docker Hub also answers `denied` for a repository that does not exist yet, so create the repository before the first publish there.
 
 ## Example: Complete Workflow
 

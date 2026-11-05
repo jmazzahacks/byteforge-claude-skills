@@ -333,6 +333,27 @@ case "$CURRENT_VERSION" in
 esac
 
 NEXT_VERSION=$((CURRENT_VERSION + 1))
+IMAGE_TAG="${REGISTRY}:${NEXT_VERSION}"
+
+# VERSION is local and gitignored, so a stale copy can point at a tag that is
+# already published. Pushing would silently replace that image. Only a clear
+# "not found" from the registry counts as unused: auth, network and unrecognized
+# errors stop the script too.
+check_tag_unused() {
+    local output
+    if output=$(docker manifest inspect "$IMAGE_TAG" 2>&1); then
+        echo "ERROR: $IMAGE_TAG already exists in the registry, so VERSION is stale."
+        echo "Set VERSION to the highest published numeric tag and re-run."
+        exit 1
+    fi
+    if ! grep -qiE 'manifest unknown|no such manifest|name unknown' <<< "$output"; then
+        echo "ERROR: Could not confirm $IMAGE_TAG is unused:"
+        echo "$output"
+        exit 1
+    fi
+}
+
+check_tag_unused
 
 echo "Building ${REGISTRY}:${NEXT_VERSION}..."
 
@@ -352,6 +373,9 @@ if [ $? -ne 0 ]; then
     echo "ERROR: Docker tag failed"
     exit 1
 fi
+
+# Check again: the tag may have been published while this image was building.
+check_tag_unused
 
 echo "Pushing ${REGISTRY}:${NEXT_VERSION}..."
 docker push "${REGISTRY}:${NEXT_VERSION}"
@@ -489,6 +513,10 @@ Connect to a remote MCP server in `.mcp.json`:
 Auth is handled at the nginx layer via Bearer token headers. The MCP server does not need to know about authentication.
 
 ## Troubleshooting
+
+**`build-publish.sh` says a tag already exists** - The local `VERSION` is behind the registry, which is common on a new machine or fresh clone because `VERSION` is gitignored. Find the highest numeric tag in the registry, write it to `VERSION`, and re-run. Do not delete the existing tag to get past the check. The check and push are not atomic, so two machines publishing at the same moment can still collide; keep to one publisher at a time.
+
+**`build-publish.sh` says it could not confirm a tag is unused** - The registry did not give a clear "not found", so the script stops rather than risk overwriting an image. Read the error it prints: usually you need to run `docker login` for that registry. Docker Hub also answers `denied` for a repository that does not exist yet, so create the repository before the first publish there.
 
 **Unknown `streamable-http` transport / missing `streamable_http_app` or `streamable_http_manager`** - Check the installed `mcp` version. These APIs require `mcp>=1.8,<2.0`; an older lockfile or environment can retain an incompatible 1.x release. Update the declaration and lockfile, sync, and rebuild with the updated dependencies (see Step 2).
 

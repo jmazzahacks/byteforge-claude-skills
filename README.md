@@ -137,7 +137,7 @@ A skill that provides a production-ready Docker deployment pattern for Flask app
 - ✅ docker run --env-file support
 
 **Design Principles:**
-1. **Automated Versioning** - VERSION file auto-increments, never manually managed
+1. **Automated Versioning** - VERSION file auto-increments, and publishing stops rather than overwrite a tag already in the registry
 2. **Security First** - Non-root user, slim base image, build-time secrets only
 3. **Production Ready** - Gunicorn with multiple workers for concurrent requests
 4. **Idempotent Builds** - Safe to run multiple times, version always increments
@@ -250,7 +250,7 @@ A skill that containerizes Python MCP (Model Context Protocol) servers for remot
 **Design Principles:**
 1. **Transport-Aware** - SSE and streamable-http have different endpoints; the skill emits the correct one
 2. **Reverse-Proxy Friendly** - nginx config tuned for SSE (long timeouts, disabled buffering)
-3. **Automated Versioning** - Same `VERSION` pattern as `flask-docker-deployment`
+3. **Automated Versioning** - Same `VERSION` pattern and registry tag check as `flask-docker-deployment`
 4. **Security First** - Non-root user, slim base image
 5. **Registry Agnostic** - Works with any OCI-compatible registry
 

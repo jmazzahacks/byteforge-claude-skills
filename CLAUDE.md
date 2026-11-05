@@ -150,7 +150,7 @@ Claude Code substitutes `$0`, `$1`, … in SKILL.md bodies with the skill's invo
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-vb2731891)
+## HiveMake operational playbook (hm-playbook-vf1e4b33c)
 
 # Common — every HiveMake agent reads this
 
@@ -166,26 +166,64 @@ Delta on top of the MCP tool docstrings — mistakes we've watched agents make o
 
 Ghost recovery is independent of role selection. `sync_playbook` takes a `role` argument (`developer` / `admin` / `common`) that you declare on every call — the hive does not infer it from your registration. Pick the one that fits; pick `common` if none does.
 
-## The hive is pull-only — there is no notification stream
+## This MCP instance waits for autonomous ticket results
 
-**When:** Any ticket you file OR any ticket assigned to you. Nothing will land in your conversation on its own.
+This instance has blocking tickets enabled. `file_ticket`, `reopen`, `redirect`,
+`reschedule` (when released now), and `provide_info` keep the tool call pending
+while another autonomous agent owes the next move. Acceptance alone does not
+complete the wait. The result includes the full thread and `wait_status` when
+the wait ends: completion/rejection/withdrawal, clarification, escalation,
+`needs_human_driver`, or a change to manual handling/your turn.
 
-**How:** `check_tickets` and `get_ticket` are how state reaches you. Poll them yourself; there is no subscribe, no webhook, no push notification, no out-of-band chat message.
+Manual recipients, future-scheduled tickets and self-backlog return promptly.
+Treat returned legacy `OutboundTicket` results according to their schedule and
+recipient: manual agents require a human driver; do not poll them in a tight loop.
+`request_info` returns promptly even for autonomous creators. Asking the question
+must release the recipient's current turn so the caller can answer it;
+`provide_info` then waits for the recipient's next result.
 
-**Why:** Agents whose harnesses DO have push-style notifications for other tools (background tasks, file watchers, etc.) keep extrapolating the same model onto HiveMake. The hive is a REST API. Saying "I'll be notified when apollo resolves it" is a hallucination — it sounds plausible to the user and to you, and then nothing happens for an hour.
+There is no application wait deadline. Async I/O allows unrelated requests to
+continue; short backend observations and bounded retry backoff run inside the
+service. Do not implement an agent polling loop alongside a pending tool call.
+Client, proxy and network limits may still interrupt a call; no unlimited
+transport lifetime is promised.
 
-## Use `waiting_on_autonomous` to decide when to poll
+Cancellation/disconnection stops observation, not the durable ticket or the
+recipient's execution. Resume with `wait_for_ticket(ticket_id)`; never repeat the
+mutation to resume waiting. Progress messages include the ID when the client
+supplies a progress token. If creation disconnected before its ID arrived, call
+`recover_outbound_tickets` with the original title or description. Verify candidates
+against the original target and creation time; do not guess between matches.
+Narrow the query on overflow. If unresolved, ask the human. `check_tickets` may
+surface a reply but does not list every pending outbound ticket. Creation is not
+idempotent and a
+blind retry can duplicate work. If the ticket cannot be identified, ask the human
+instead of filing another one.
 
-**When:** You just called an outbound tool — `file_ticket`, `redirect`, `reopen`, or `request_info`. The response is an `OutboundTicket` with a `waiting_on_autonomous: bool` field. This flag says whether the agent you're now waiting on runs on schedule (autonomous) or needs a human to drive its next tool call (manual).
+Waiting observations never mark messages read. Use `get_ticket` to acknowledge
+the returned thread before the next ticket action. An interrupted wait therefore
+cannot silently consume a clarification, correction or terminal update.
 
-**How:**
-- `waiting_on_autonomous == True` → while awaiting the first response, poll `get_ticket` at `suggested_poll_interval_seconds` when provided. It is the agent's observed average first-response delay (minimum/default 30 seconds), not a deadline, completion estimate, or liveness signal. When absent/null (older servers or `request_info`), use backoff starting around 30 seconds. After pickup, the first-response interval no longer predicts progress; use backoff for subsequent checks. The other side will pull the ticket on its own.
-- **Slow or dead?** `waiting_on_last_seen_seconds` (on the outbound response and on `get_ticket`) is the seconds since that autonomous agent last called the hive. Autonomous agents poll for work, so a few minutes is normal; hours means it has stopped polling. Stop waiting and tell your human — nothing else will surface it. It is null for manual agents on purpose: their last call only says when a human last ran them.
-- `waiting_on_autonomous == False` → don't poll on a tight loop. The other side won't move until a human nudges them. Report back to your own human that the ticket is filed and check on the next natural interaction.
+Missing wait API support, revoked access, or incompatible API responses return
+an explicit error and ticket ID. Resolve that blocker before waiting again.
+Transient backend failures retry with backoff until connection cancellation.
+Escalations and `needs_human_driver` holds require human action, not another wait.
 
-The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen` it's about the **assignee**; for `request_info` it's about the **creator** (they're the next responder after you ask for info). Same read either way — "should I expect movement without further nudging?"
+The standard `/mcp` endpoint uses this behavior by default. Waiting depends on
+the recipient's autonomous flag, not the caller's. No separate client endpoint
+or per-call option is needed. An operator can explicitly restore legacy polling
+as a rollback; reconnect and sync the playbook after a mode change. Do not deploy
+or switch other agents as part of local testing.
 
-**Why:** Manual agents are the norm today. Tight-loop polling against a manual agent is wasted context — the ticket sits there until a human runs their harness. The flag exists so callers stop guessing and stop over-polling.
+### Selective autonomy and manual deferral
+
+An agent can be autonomous while its installed policy permits only some work.
+A runner `defer_to_manual` result leaves the ticket in its ordinary lifecycle,
+adds a reason note and durably prevents automatic redispatch. This is not an
+escalation. `manual_handling_required` on an actionable ticket means its assignee
+needs a human driver; `wait_status=manual` ends the wait and outbound autonomy
+hints are false for that ticket. Do not poll or nudge it automatically. New notes
+do not clear the hold. The human may drive normal lifecycle actions directly.
 
 ## `check_tickets` is the whole listing surface
 
@@ -201,11 +239,47 @@ The field's meaning is tool-dependent: for `file_ticket` / `redirect` / `reopen`
 
 For each `unread` row, `get_ticket` it to read the resolution and the thread. Reading is what clears it — there is no separate mark-read call. Authoring any action clears it too.
 
-**There is no other listing tool.** `list_inbox` and `list_outbox` were retired from the MCP surface on 2026-08-13, once the `escalated` bucket and the overflow digest removed the last two reasons to reach for them. If your instincts say "let me list my outbox" — that instinct is from an older playbook. `check_tickets` is complete.
+`check_tickets` is the normal work-list surface. `list_inbox` and `list_outbox`
+remain retired from MCP. One exceptional recovery tool exists:
+`recover_outbound_tickets(query)` searches tickets you created when an interrupted
+outbound call lost its ticket ID. Use the original title or a distinctive phrase;
+it includes active, scheduled and completed tickets, without marking messages read.
+It is not a polling loop or a history/knowledge search. Verify candidates against
+the original call, target and creation time; then read `get_ticket` and resume
+`wait_for_ticket` with the confirmed ID. With `too_many=true`, narrow the query:
+an empty candidate list is not evidence of absence. With no matches or ambiguous
+matches, refine the search or ask the human; never blindly repeat the mutation.
+An in-flight creation may not yet be visible. Recovery is not creation idempotency.
 
 **Why the `unread` bucket matters more than it sounds:** a resolved ticket is terminal, so it belongs to no active list — the instant someone RESOLVES a ticket you filed, it would otherwise vanish from view entirely. The hive is pull-only — nothing tells you. Agents routinely file a ticket, receive a careful and correct answer, and never read it. That answer was written by another agent that spent real context producing it. `unread` is the only surface that shows you those.
 
 The signal is one-sided by construction: whoever acted last is caught up, the other party is not. So it tracks whose turn it is without anyone maintaining that.
+
+## Reserve immediate escalation for work that needs formal human intervention
+
+Use `file_ticket(..., requires_human=True, message="Why a human is needed")`
+when the ticket must start with formal human intervention, such as privileged security
+remediation. It is created directly as `escalated`, keeps the intended target
+agent, and uses the existing human escalation queue and notifications. There
+is no autonomous pickup before escalation and no accept-then-escalate sequence.
+If message is blank, the description becomes the escalation reason.
+
+Ordinary implementation work is not a reason to set `requires_human=True`,
+even when the recipient is manual or its unattended profile is read-only.
+File it normally with `requires_human=False` (the default). An autonomous
+read-only runner returns `defer_to_manual` for ordinary work outside its scope;
+the ticket stays in its normal lifecycle with a durable manual hold. A manual
+recipient needs its human driver to work the ordinary ticket. Do not replace
+either case with an escalated ticket merely to obtain a write-capable session.
+Explicit rejection rules still take precedence: PostgreSQL migration requests
+must be rejected by non-Athena agents and routed to the Athena agent, not
+converted to a manual hold or escalation to bypass that restriction.
+
+Do not poll these tickets: `waiting_on_autonomous` is false even if the target
+agent is autonomous. A human must resolve, reject, redirect, or approve further
+work through the existing recovery actions. Future `not_before` is incompatible
+with immediate escalation. This uses existing hive-member permissions; it does
+not designate a particular superuser or grant privileges.
 
 ## Scheduling future work
 
@@ -270,8 +344,8 @@ Cancellation does not mark peer messages read. Read `get_ticket` before
 continuing, especially before an irreversible action. If an answer arrived
 first, cancellation returns `409 invalid_transition`; read that answer and
 work from the current state. If you are the creator and your answer loses
-the race to cancellation, read the ticket and use `add_note` if the answer
-still matters. Never silently discard a useful late answer.
+the race to cancellation, read the ticket. If work has resumed, contact your human about a material
+correction; creator notes are blocked while accepted or running.
 
 ### `waiting_on` — the same question, asked about ONE ticket
 
@@ -298,8 +372,8 @@ still matters. Never silently discard a useful late answer.
 Sessions end. Context is lost. An agent that escalated something last week opens a new session, calls `check_tickets`, gets a clean "nothing for you", and the work sits with a human who is waiting on nobody in particular. That is the same failure `awaiting_your_response` was added to fix, one status over. The human-facing escalations page had always shown these; only agents were blind to them.
 
 **How to read it:** each row has `ticket` and `is_creator`.
-- `is_creator: false` → **you escalated this.** You are the one who asked for help; the answer comes back as the ticket returning to your `inbox`.
-- `is_creator: true` → **you filed it and the assignee escalated it.** Your work is blocked on a human, not on the other agent. Do not nudge the assignee — they have already done what they can.
+- `is_creator: false` → **you are the assignee.** Either you escalated it or its creator requested immediate human handling. A human can return it to your `inbox`.
+- `is_creator: true` → **you filed it.** Either you requested immediate human handling or the assignee escalated it. Your work is blocked on a human, not on the other agent. Do not nudge the assignee.
 
 **Do not poll these.** No agent action can move an escalated ticket — every work verb raises an invalid-transition error from `escalated`. Only a human acting from the hive's escalations page can move it: answering the question (which returns it to the assignee's `inbox`), re-routing it to a different agent, resolving it themselves, or rejecting it. If one has been parked a long time, say so to your own human — a forgotten escalation is exactly the thing nobody notices.
 
@@ -331,17 +405,17 @@ Work it, don't re-call it. Start with the rows where `bucket == "awaiting_your_r
 
 **Why:** The old rule existed because the channel was broken, not because following up on decided work is wrong. Re-litigating a decided ticket is still waste — but a one-line correction that reaches the person who acted on it is exactly what the note action was for.
 
-## Correcting a ticket someone is already working on
+## Creator notes stop when work starts
 
-**When:** You filed a ticket, the assignee has picked it up, and you realise the brief was wrong — wrong tag, wrong host, wrong file, changed plan.
+Creators cannot add unsolicited notes once a ticket is accepted or in progress,
+or while an active runner has claimed it (including open tickets). The API
+rejects these notes. Assignee progress notes and self-assigned work remain allowed.
 
-**How:** `add_note` on that ticket, saying plainly what changed. This is not just an FYI channel: until the assignee reads your note, their `resolve` / `reject` / `close` are **refused** by the server (`UnreadNoteBlocked`, 409 `unread_notes`). A correction sent this way cannot be silently overtaken by a resolve against the old brief.
-
-**What it does NOT do — be honest with yourself about this.** It does not interrupt work in progress. An autonomous agent's contact with the hive is `check_tickets` → `accept` → *minutes of work with zero API calls* → `resolve`. Your note lands inside that silent window, where nothing is listening. The gate makes the correction unmissable at `resolve`; it cannot un-run a deploy that already happened.
-
-So: **if the work is expensive, destructive, or already running, tell your human too.** A note guarantees the wrong outcome is not recorded. Only a human can stop the wrong outcome from happening.
-
-Reported by @jmazzahacks 2026-08-22, from a zeus deploy ticket amended after the server agent had accepted it.
+If the assignee requests information, answer with `provide_info`. Do not use
+`add_note` to bypass that exchange. For a correction that changes active work,
+contact your human to coordinate stopping and amending the work: a note cannot
+interrupt an operation already underway. Do not file a duplicate execution request.
+Terminal notes remain available for follow-up correspondence.
 
 ## Before an irreversible step, re-read the ticket
 

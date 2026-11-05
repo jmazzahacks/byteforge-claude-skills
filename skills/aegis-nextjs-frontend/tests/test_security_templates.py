@@ -264,7 +264,13 @@ class PublishScriptTests(unittest.TestCase):
             bindir.mkdir()
             docker = bindir / 'docker'
             docker.write_text('#!/usr/bin/env bash\nprintf "%s|%s\\n" "$PWD" "$*" >> "$TEST_LOG"\n'
-                              'if [[ "${FAIL_COMMAND:-}" == "$1" ]]; then exit 7; fi\n')
+                              'if [[ "${FAIL_COMMAND:-}" == "$1" ]]; then exit 7; fi\n'
+                              'if [[ "$1" == manifest ]]; then\n'
+                              '    count=$(cat "$TEST_LOG.manifest" 2>/dev/null || echo 0)\n'
+                              '    count=$((count + 1)); echo "$count" > "$TEST_LOG.manifest"\n'
+                              '    if [[ "${TAG_EXISTS_ON_CHECK:-}" == "$count" ]]; then exit 0; fi\n'
+                              '    echo "${MANIFEST_ERROR:-manifest unknown}" >&2; exit 1\n'
+                              'fi\n')
             docker.chmod(0o755)
             log = root / 'docker.log'
             env = {**os.environ, 'PATH': str(bindir) + ':' + os.environ['PATH'], 'TEST_LOG': str(log),
@@ -286,7 +292,32 @@ class PublishScriptTests(unittest.TestCase):
                 self.assertNotEqual(run(FAIL_COMMAND=command).returncode, 0)
                 self.assertEqual((project / 'VERSION').read_text(), '1\n')
                 if command == 'build':
-                    self.assertEqual(len(log.read_text().splitlines()), 1)
+                    self.assertEqual(len(log.read_text().splitlines()), 2)
+            manifest_counter = Path(str(log) + '.manifest')
+            for absent_error in ('manifest unknown', 'no such manifest: example.test/app:2', 'name unknown: repo'):
+                (project / 'VERSION').write_text('1\n')
+                manifest_counter.unlink(missing_ok=True)
+                self.assertEqual(run(MANIFEST_ERROR=absent_error).returncode, 0, absent_error)
+                self.assertEqual((project / 'VERSION').read_text(), '2\n')
+            for blocking_error in ('denied', 'no basic auth credentials', 'dial tcp: no such host', 'unexpected'):
+                (project / 'VERSION').write_text('1\n')
+                manifest_counter.unlink(missing_ok=True)
+                log.write_text('')
+                result = run(MANIFEST_ERROR=blocking_error)
+                self.assertNotEqual(result.returncode, 0, blocking_error)
+                self.assertIn('Could not confirm', result.stderr)
+                self.assertNotIn('|build ', log.read_text())
+                self.assertEqual((project / 'VERSION').read_text(), '1\n')
+            for check, expected_build in (('1', False), ('2', True)):
+                manifest_counter.unlink(missing_ok=True)
+                log.write_text('')
+                result = run(TAG_EXISTS_ON_CHECK=check)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('already exists', result.stderr)
+                self.assertEqual('|build ' in log.read_text(), expected_build)
+                self.assertNotIn('|push ', log.read_text())
+                self.assertEqual((project / 'VERSION').read_text(), '1\n')
+            manifest_counter.unlink(missing_ok=True)
             log.write_text('')
             self.assertNotEqual(run('--unexpected').returncode, 0)
             self.assertNotEqual(run(CR_PAT='').returncode, 0)
