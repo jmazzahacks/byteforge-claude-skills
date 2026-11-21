@@ -6,12 +6,12 @@
   },
   "metadata": {
     "description": "Byteforge development skills collection",
-    "version": "1.20.14"
+    "version": "1.21.0"
   },
   "plugins": [
     {
       "name": "byteforge-skills",
-      "description": "Collection of development setup skills including PostgreSQL database setup, Python library setup, Flask REST API with OpenAPI docs and dataclass models, Flask Docker deployment, Grafana Loki logging configuration, Next.js frontend scaffolding with ByteForge Aegis authentication, ByteForge Gatekeeper nginx vhost setup, Prometheus metrics for multi-worker Python/Flask apps, Flask Telegram bot webhook integration, MCP server nginx vhost with Gatekeeper auth, native async MCP migration, and uv supply-chain hardening (pinned + hashed + release-age-gated dependency locking)",
+      "description": "Collection of development setup skills including PostgreSQL database setup, Python library setup, Flask REST API with OpenAPI docs and dataclass models, Flask Docker deployment, Grafana Loki logging configuration, Next.js frontend scaffolding with ByteForge Aegis authentication, ByteForge Gatekeeper nginx vhost setup, Prometheus metrics for multi-worker Python/Flask apps, Flask Telegram bot webhook integration, MCP server nginx vhost with Gatekeeper auth, native async MCP migration, uv supply-chain hardening (pinned + hashed + release-age-gated dependency locking), and tailnet-only Codync host setup with auto-updates and service env vars",
       "source": "./",
       "strict": true,
       "skills": [
@@ -28,7 +28,8 @@
         "./skills/byteforge-prometheus-metrics",
         "./skills/flask-telegram-bot",
         "./skills/mcp-server-nginx-gatekeeper",
-        "./skills/uv-supply-chain-hardening"
+        "./skills/uv-supply-chain-hardening",
+        "./skills/codync-tailscale-host"
       ]
     }
   ]

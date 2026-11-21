@@ -472,6 +472,32 @@ A skill that converts a Python project's Docker build from a loose `pip install`
 
 ---
 
+### codync-tailscale-host
+
+A skill that installs a [Codync](https://github.com/leepokai/Codync) host on Linux or macOS. Codync runs coding agents as persistent bots that you drive from a phone or desktop app. The skill makes the host reachable **only over your Tailscale tailnet**, keeps it off the Codync cloud relay, turns automatic updates on, and passes the environment variables you choose into the background service.
+
+**What it sets up:**
+- Codync installed from an installer you've reviewed, pinned to a release (`--host-only`, no sudo)
+- Network lockdown applied *before* the first start:
+  - Linux: ufw allows the port only on the Tailscale interface.
+  - macOS: the host binds to loopback, and `tailscale serve` publishes it to the tailnet (a pf alternative is documented in a reference).
+- The cloud relay turned off and kept off (`codync-host cloud --disable` plus `CODYNC_CLOUD=off` in the service)
+- A private `0600` env file for the agents' tokens, filled in without printing values:
+  - Linux: systemd drop-ins, which survive `codync-host install`.
+  - macOS: the variables are re-applied to the LaunchAgent plist, because `install` rewrites it.
+- Automatic updates turned on
+
+**Features:**
+- ✅ Covers Linux (systemd `--user`) and macOS (launchd)
+- ✅ Orders steps so the port is never briefly public
+- ✅ Secrets are never echoed; checks print variable names only
+- ✅ Spells out the trade-offs: loopback token behaviour behind `tailscale serve`, least-privilege env vars, the status-line edit, and bots running as the service user
+- ✅ Idempotent, with steps for rotating tokens, maintenance and uninstalling
+
+[View full codync-tailscale-host documentation →](./skills/codync-tailscale-host/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -577,7 +603,8 @@ byteforge-claude-skills/
 │   ├── byteforge-prometheus-metrics/
 │   ├── flask-telegram-bot/
 │   ├── mcp-server-nginx-gatekeeper/
-│   └── uv-supply-chain-hardening/
+│   ├── uv-supply-chain-hardening/
+│   └── codync-tailscale-host/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```
