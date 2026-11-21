@@ -231,8 +231,8 @@ A skill that containerizes Python MCP (Model Context Protocol) servers for remot
 **What it creates:**
 - Multi-stage Dockerfile (Python 3.13-slim, non-root user)
 - `build-publish.sh` with automated versioning and registry publishing
-- `docker-compose.yaml` example with environment configuration
-- Optional nginx reverse proxy config tuned for HTTPS and SSE streaming
+- `docker-compose.yaml`: shared-Docker-network variant (no published ports) for containerized nginx / `mcp-server-nginx-gatekeeper`, or a loopback-only port variant for host nginx; both hardened (`read_only`, `cap_drop: [ALL]`, `no-new-privileges`)
+- Optional host-nginx reverse proxy config tuned for HTTPS and SSE streaming (containerized nginx is handed off to `mcp-server-nginx-gatekeeper`)
 - `example.env` for environment variables
 - `.dockerignore`
 
@@ -242,7 +242,7 @@ A skill that containerizes Python MCP (Model Context Protocol) servers for remot
 - ✅ SSE and streamable-http transports (different endpoints, handled correctly)
 - ✅ Automated `VERSION` file management
 - ✅ Non-root container user
-- ✅ Private Git dependency support via `CR_PAT` build arg
+- ✅ Private Git dependency support via a `CR_PAT` BuildKit secret and git `url.insteadOf` (token-free requirements, transitive private deps covered)
 - ✅ Dual tagging (version + `latest`)
 - ✅ nginx config sized for SSE streaming (long timeouts, no buffering)
 - ✅ Compatible with GHCR, Docker Hub, ECR, or any OCI registry

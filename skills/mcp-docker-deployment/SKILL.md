@@ -27,8 +27,11 @@ Ask the user:
 4. **"What Python files/directories need to be copied into the container?"** (e.g., `tools/`, `models/`, `formatting.py`)
 5. **"What container registry URL?"** (e.g., `ghcr.io/{org}/{project}`)
 6. **"Does the MCP server need any environment variables?"** (list them for docker-compose and example.env)
-7. **"Will this be behind an nginx reverse proxy with HTTPS?"** (yes/no - if yes, include nginx config)
-8. **"Does it have private pip dependencies?"** (yes/no - if yes, needs CR_PAT via BuildKit secret mount)
+7. **"Will this be behind an nginx reverse proxy with HTTPS? If so, does nginx run in a Docker container (e.g. with ByteForge Gatekeeper) or directly on the host?"** This picks the Step 6 compose variant:
+   - **nginx in a container** (the usual case, and what `mcp-server-nginx-gatekeeper` sets up): use the shared-network compose. Also ask for the name of the Docker network nginx is attached to; it goes in `MCP_DOCKER_NETWORK`.
+   - **nginx on the host**: use the loopback published-port compose.
+   - **no nginx**: use the loopback published-port compose for local use only.
+8. **"Does it have private pip dependencies?"** (yes/no - if yes, needs CR_PAT via BuildKit secret mount, with git `url.insteadOf` auth so requirements.txt and every pyproject stay token-free)
 
 ## Step 2: Create Dockerfile
 
@@ -82,21 +85,39 @@ CMD ["python", "{entry_point}"]
 
 If private pip dependencies, replace the plain `pip install` line above with a
 BuildKit secret mount + scrub block. CR_PAT enters via `--mount=type=secret`
-(never recorded in `docker history`), and the RUN scrubs pip's install
-metadata (both `direct_url.json` records and hatchling-baked `METADATA` lines)
-and self-verifies — the build FAILS if any token byte survives in
-site-packages. Requires BuildKit (default in Docker 23+; for older Docker,
-`export DOCKER_BUILDKIT=1`).
+(never recorded in `docker history`). Auth comes from git `url.insteadOf`
+config scoped to the one `pip install` command, so `requirements.txt` stays
+**token-free** (`pkg @ git+https://github.com/{owner}/{repo}.git`) and every
+clone in the graph is authenticated, including *transitive* private deps that
+a private library declares token-free in its own `pyproject.toml`. An inline
+`git+https://${CR_PAT}@...` URL in requirements.txt authenticates only the
+top-level clones, so a nested private dep fails with git exit 128. This is the
+same pattern as the `uv-supply-chain-hardening` skill's `with_private_git`
+helper.
+
+`test -n` makes a build without `--secret` fail fast instead of cloning
+anonymously. The RUN then scrubs pip's install metadata (`direct_url.json`
+records and any hatchling-baked `METADATA` lines) and self-verifies: the build
+FAILS if any token byte survives in site-packages. Requires BuildKit (default
+in Docker 23+; for older Docker, `export DOCKER_BUILDKIT=1`).
 
 ```dockerfile
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=secret,id=cr_pat \
-    export CR_PAT="$(cat /run/secrets/cr_pat)" \
-    && pip install --no-cache-dir -r requirements.txt \
+    CR_PAT="$(cat /run/secrets/cr_pat)" \
+    && test -n "${CR_PAT}" \
+    && GIT_CONFIG_COUNT=1 \
+       GIT_CONFIG_KEY_0="url.https://${CR_PAT}@github.com/.insteadOf" \
+       GIT_CONFIG_VALUE_0="https://github.com/" \
+       pip install --no-cache-dir -r requirements.txt \
     && find /usr/local/lib/python3.13/site-packages -name direct_url.json -delete \
     && grep -rl "${CR_PAT}" /usr/local/lib/python3.13/site-packages | xargs -r sed -i "s|${CR_PAT}|REDACTED|g" \
     && ! grep -rq "${CR_PAT}" /usr/local/lib/python3.13/site-packages
 ```
+
+If the project is uv-hardened (hash-locked `requirements.txt`, private deps in
+`requirements-private.txt`), use the `uv-supply-chain-hardening` Dockerfile
+instead of this block.
 
 Do NOT use `ARG CR_PAT` + `--build-arg`: any layer that consumes the ARG
 records the value verbatim in `docker history`, readable by anyone who can
@@ -437,24 +458,98 @@ VERSION
 
 ## Step 6: Create docker-compose.yaml
 
+Pick the variant from the Step 1 Q7 answer. Both keep the MCP endpoint off
+public interfaces: the server itself has no auth, and many MCP servers hold
+credentials or write keys.
+
+### Variant A: nginx in a container (shared Docker network, no published ports)
+
+Use this whenever nginx runs in Docker, including every setup made with the
+`mcp-server-nginx-gatekeeper` skill. That skill's snippet proxies with
+`proxy_pass http://$mcp_upstream:$mcp_port` and `resolver 127.0.0.11`, so
+nginx must reach this container **by its service name over a Docker network
+they share**. A published host port can't help here: inside the nginx
+container, `127.0.0.1` is nginx itself.
+
+```yaml
+# No published ports: the only way in is nginx (+ Gatekeeper auth), which
+# reaches this container by name over the shared Docker network.
+services:
+  {service_name}:
+    image: {registry_url}:latest
+    container_name: {container_name}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+      # Add all app-specific env vars from example.env (or keep them in .env)
+    networks:
+      - mcp
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # volumes:
+    #   - /path/to/cert.pem:/app/ca.pem:ro
+    # For LOCAL testing only, uncomment to reach it directly:
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+
+networks:
+  mcp:
+    external: true
+    # The existing Docker network nginx is attached to.
+    name: ${MCP_DOCKER_NETWORK:?set MCP_DOCKER_NETWORK in .env to the Docker network nginx is attached to}
+```
+
+- `{service_name}` (or `container_name`) is the hostname nginx uses: it is the
+  `<UPSTREAM_CONTAINER>` / `set $mcp_upstream ...;` value in
+  `mcp-server-nginx-gatekeeper`, and 8000 is its `$mcp_port`.
+- The network is `external`, so compose never creates it. Compose refuses to
+  start until `MCP_DOCKER_NETWORK` is set. List candidates with
+  `docker network ls`, or read nginx's with
+  `docker inspect -f '{{json .NetworkSettings.Networks}}' {nginx_container}`.
+- `read_only: true` with a `/tmp` tmpfs is fine for a stock FastMCP or
+  low-level SDK server. If the server writes anywhere else (a cache dir, a
+  Prometheus multiprocess dir), add a tmpfs or volume for that path rather
+  than dropping `read_only`.
+
+Then wire nginx with the `mcp-server-nginx-gatekeeper` skill (Step 9).
+
+### Variant B: nginx on the host, or no nginx (loopback published port)
+
 ```yaml
 services:
   {service_name}:
     image: {registry_url}:latest
     container_name: {container_name}
     restart: unless-stopped
+    env_file: .env
     ports:
-      - "8000:8000"
+      # Loopback only: host nginx proxies to localhost:8000. Never publish
+      # "8000:8000", which exposes the unauthenticated endpoint on every
+      # interface (and Docker's port publishing bypasses ufw).
+      - "127.0.0.1:8000:8000"
     environment:
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: 8000
-      # Add all app-specific env vars from example.env
+      # Add all app-specific env vars from example.env (or keep them in .env)
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     # volumes:
     #   - /path/to/cert.pem:/app/ca.pem:ro
 ```
 
-> **FastMCP note**: If using FastMCP, also add `FASTMCP_HOST: 0.0.0.0` and `FASTMCP_PORT: 8000` to the environment section.
+> **FastMCP note** (both variants): If using FastMCP, also add `FASTMCP_HOST: 0.0.0.0` and `FASTMCP_PORT: 8000` to the environment section.
 
 Include **all** environment variables from the project's example.env.
 
@@ -473,8 +568,14 @@ MCP_TRANSPORT=streamable-http
 # FASTMCP_HOST=0.0.0.0
 # FASTMCP_PORT=8000
 
+# Step 6 Variant A only: the existing Docker network nginx is attached to.
+# Read by docker-compose.yaml; compose refuses to start without it.
+# MCP_DOCKER_NETWORK=
+
 # App-specific variables below
 ```
+
+For Variant A, uncomment `MCP_DOCKER_NETWORK` here and set it in `.env`.
 
 ## Step 8: Update .gitignore
 
@@ -482,7 +583,8 @@ Add `VERSION` and `.env` entries.
 
 ## Step 9: Nginx Reverse Proxy (if applicable)
 
-If the MCP server will be behind nginx with HTTPS, see [references/nginx-sse.md](references/nginx-sse.md) for the config snippet. The same `location` block works cleanly for **both** transports — `proxy_buffering off` plus long `proxy_read_timeout` are still useful for streamable-http's optional server→client streaming responses.
+- **nginx in a container (Step 6 Variant A)**: use the `mcp-server-nginx-gatekeeper` skill. It adds the `location /mcp-{name}` block, the shared proxy/auth/streaming snippet, Gatekeeper `auth_request`, and the `resolver 127.0.0.11` that by-name `proxy_pass` needs. Give it this container's service name as the upstream, 8000 as the port, and the network from `MCP_DOCKER_NETWORK`.
+- **nginx on the host (Step 6 Variant B)**: see [references/nginx-sse.md](references/nginx-sse.md) for a `location` block that proxies to `localhost:8000`. The same block works cleanly for **both** transports — `proxy_buffering off` plus long `proxy_read_timeout` are still useful for streamable-http's optional server→client streaming responses. It adds no authentication: put auth in front of it if the server holds credentials.
 
 ## MCP Endpoints
 
@@ -524,6 +626,10 @@ Auth is handled at the nginx layer via Bearer token headers. The MCP server does
 **Container binds to 127.0.0.1 instead of 0.0.0.0 (FastMCP)** - FastMCP constructor defaults override env vars. Pass host/port explicitly in the FastMCP constructor (see Step 3, Path A).
 
 **SSE connection stale / wedged after container restart or network blip** - When Claude Code's SSE GET dies, it auto-reconnects but does NOT re-run the `initialize` handshake; the new server-side session sees `tools/call` before `initialize`, the SDK raises `RuntimeError("Received request before initialization was complete")`, and the wire-level error becomes a generic `-32602 "Invalid request parameters"`. Claude Code treats `-32602` as unrecoverable and stays wedged on every subsequent call. Workaround: `/mcp` reload in Claude Code to force a fresh handshake. Real fix: migrate to `streamable-http` with `stateless_http=True` — that's exactly what this bug class needs (see "Transport choice" near the top). Upstream issue: [anthropics/claude-code#60061](https://github.com/anthropics/claude-code/issues/60061).
+
+**nginx returns 502 / `host not found` for the MCP upstream** - With containerized nginx, the MCP container must be on the same Docker network (Step 6 Variant A); a published host port is not reachable from inside the nginx container. Check with `docker network inspect "$MCP_DOCKER_NETWORK"` that both containers are listed, and that nginx has a `resolver 127.0.0.11` (see `mcp-server-nginx-gatekeeper` Trap 5).
+
+**Private dependency clone fails with git exit 128 during `docker build`** - Either the build ran without `--secret id=cr_pat,env=CR_PAT` (the secret read and `test -n` check stop it before any clone), or the Dockerfile authenticates with an inline `${CR_PAT}` URL that only covers top-level requirements. Use the Step 2 `url.insteadOf` block, which also authenticates transitive private deps.
 
 **PyPI package version stale in Docker image** - Publish the new version to PyPI before running build-publish.sh. Verify with `docker exec {container} pip show {package}`.
 

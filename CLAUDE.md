@@ -150,7 +150,7 @@ Claude Code substitutes `$0`, `$1`, … in SKILL.md bodies with the skill's invo
 
 All skills created by @jmazzahacks (Jason Byteforge). When making changes or updates, maintain attribution in plugin metadata.
 
-## HiveMake operational playbook (hm-playbook-vf1e4b33c)
+## HiveMake operational playbook (hm-playbook-v4e8d9675)
 
 # Common — every HiveMake agent reads this
 
@@ -231,7 +231,7 @@ do not clear the hold. The human may drive normal lifecycle actions directly.
 
 **How:** Call `check_tickets` — no arguments for the first page. It returns six buckets:
 - `inbox` — active tickets assigned to you *by another agent*. **Work you owe someone.**
-- `scheduled` — future tickets YOU created, including self-assigned ones. Not actionable yet; creator may `add_note`, `withdraw`, or `reschedule`.
+- `scheduled` — future tickets you created or are assigned, including self-assigned ones. Not actionable yet; creator may `add_note`, `withdraw`, or `reschedule`.
 - `self_assigned` — active tickets you both filed and own. **Your own backlog** — nobody is blocked on these.
 - `awaiting_your_response` — tickets *you filed* where the assignee called `request_info`. **An answer you owe.**
 - `unread` — terminal tickets you're a party to that changed since you last looked. **Correspondence you owe.**
@@ -289,12 +289,17 @@ but excludes it from the assignee's work queue until that UTC time. Use exactly
 relative phrases. MCP converts to Unix seconds for the SDK/API. Replies include
 `ticket.not_before_utc` for humans and agents to verify the schedule.
 
-Before release the creator sees it in `check_tickets().scheduled`, ordered
+Before release both parties see it in `check_tickets().scheduled`, ordered
 soonest first. `is_scheduled` with `waiting_on="nobody"` means waiting for time,
 not a terminal ticket. The creator may amend the brief with `add_note`, revoke it
 with `withdraw`, or change its time with `reschedule`. Explicit `not_before=null`
 on `reschedule` releases it now; a past UTC time also releases immediately.
-Only still-scheduled tickets can be rescheduled. Do not poll the assignee or
+Open, accepted and in-progress tickets can be deferred or resumed by the
+assignee. Creators can reschedule only open, unclaimed work; hive owners/admins
+can use the human schedule endpoint. Lifecycle status and holds are preserved.
+Pending questions and escalations must be handled first. An in-flight runner
+submission returns 409: wait for it to finish; scheduling is not cancellation.
+Supply a reason in message. Null cancels the deferral, not the ticket. Do not poll the assignee or
 interpret its liveness while waiting for the scheduled time.
 
 At or after release the next queue read includes it in the assignee's `inbox`
@@ -537,3 +542,4 @@ Most important before concluding something ISN'T built, WASN'T decided, or DOESN
 **Your threshold is deliberately lower than an admin's.** `admin.md` tells host-ops agents to skip recall for routine rotations and config edits, and to call it only for migrations, auth/secret changes, new services, and before a `request_info`. That is not a stale copy of this rule — the two roles genuinely differ. An admin's routine work is mechanical and self-verifying: the container either starts or it doesn't, and the feedback arrives in seconds. Authoring work is neither. A wrong assumption about what already exists survives review, passes tests, and ships, because nothing in the loop contradicts it. So developers pay the lookup cost every time and admins pay it selectively.
 
 **If you only follow one line of this file, make it the absence check.** Before asserting that something does not exist, is not built, or was never decided — ask. See "Check the hive's memory before trusting your own" in the common playbook for why those claims are the ones that rot, and for the three-session failure that put it there.
+
