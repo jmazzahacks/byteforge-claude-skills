@@ -498,6 +498,27 @@ A skill that installs a [Codync](https://github.com/leepokai/Codync) host on Lin
 
 ---
 
+### mcp-file-friend
+
+A skill for handing local files to remote MCP tools through an existing [File Friend](https://github.com/jmazzahacks/byteforge-mcp-file-friend-cli) service. The agent uploads the file with the `ff` CLI and passes the verified JSON **reference**, never a local path or base64 bytes. The receiving tool resolves the reference into verified bytes.
+
+**What it covers:**
+- Isolated `ff` install with `uv tool`, pinned to a reviewed commit (Python 3.13, Linux/macOS; no backend, PostgreSQL or Docker on the host)
+- Server and token configuration through `FF_SERVER_URL`/`FF_TOKEN` or a `0600` `~/.config/ff/config.toml`, without echoing secrets
+- `ff upload` that prints a reference only after the server has verified the file, plus resuming, `--restart`, TTL, timeout, chunk-size and size limits
+- `ff info`, `ff download` (SHA-256 verified, resumable) and `ff rm`, including the difference between deletion intent and asynchronous cleanup, and when it is safe to delete
+- Consumer side: accepting references in a Python MCP tool with the SDK's `open_reference`, with limits, async use, sanitized errors and no path leakage
+
+**Features:**
+- ✅ Every example checked against the CLI and SDK source and run against a loopback fake server
+- ✅ Treats references, download URLs and tokens as secrets
+- ✅ Refuses to invent a universal tool schema: it reads the consumer's own argument
+- ✅ Longer SDK, HTTP and lifecycle details in `references/consumer-integration.md`
+
+[View full mcp-file-friend documentation →](./skills/mcp-file-friend/SKILL.md)
+
+---
+
 ## Installation
 
 ### From GitHub (Recommended)
@@ -604,7 +625,8 @@ byteforge-claude-skills/
 │   ├── flask-telegram-bot/
 │   ├── mcp-server-nginx-gatekeeper/
 │   ├── uv-supply-chain-hardening/
-│   └── codync-tailscale-host/
+│   ├── codync-tailscale-host/
+│   └── mcp-file-friend/
 ├── CLAUDE.md                    # Development guide
 └── README.md                    # This file
 ```
